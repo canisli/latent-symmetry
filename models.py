@@ -23,43 +23,22 @@ def sample_so3_rotation(batch_size, device="cpu", dtype=torch.float32, eps=1e-8)
 
 
 def so3_orbit_variance_loss(model, x, layer_idx):
-    """
-    Compute SO(3) orbit variance loss: 1/2 ||h(R1*x) - h(R2*x)||^2
-    
-    For each sample in the batch, samples two rotations R1 and R2 from the Haar measure,
-    applies them to the input, and computes the variance of activations at the specified layer.
-    
-    Args:
-        model: MLP model instance
-        x: Input tensor of shape (batch_size, 3)
-        layer_idx: Layer index to compute loss at (see MLP.forward_with_intermediate)
-    
-    Returns:
-        Scalar loss value (mean over batch)
-    """
-    batch_size = x.shape[0]
-    device = x.device
-    
-    # Sample rotations R1 and R2 for each sample in the batch
-    R1 = sample_so3_rotation(batch_size, device=device)
-    R2 = sample_so3_rotation(batch_size, device=device)
-    
-    # Apply rotations: x_rot = (R @ x^T)^T = x @ R^T
-    # x has shape (batch_size, 3), R has shape (batch_size, 3, 3)
-    # We want to compute R @ x for each sample
-    x_rot1 = torch.bmm(R1, x.unsqueeze(-1)).squeeze(-1)  # (batch_size, 3)
-    x_rot2 = torch.bmm(R2, x.unsqueeze(-1)).squeeze(-1)  # (batch_size, 3)
-    
-    # Get activations at specified layer
-    h1 = model.forward_with_intermediate(x_rot1, layer_idx)  # (batch_size, hidden_dim)
-    h2 = model.forward_with_intermediate(x_rot2, layer_idx)  # (batch_size, hidden_dim)
-    
-    # Compute 1/2 ||h(R1*x) - h(R2*x)||^2 for each sample
-    diff = h1 - h2  # (batch_size, hidden_dim)
-    loss_per_sample = 0.5 * torch.sum(diff ** 2, dim=1)  # (batch_size,)
-    
-    # Return mean over batch
-    return loss_per_sample.mean()
+    B, D = x.shape
+    assert D == 3
+    device, dtype = x.device, x.dtype
+
+    R1 = sample_so3_rotation(B, device=device, dtype=dtype)
+    R2 = sample_so3_rotation(B, device=device, dtype=dtype)
+
+    x_rot1 = torch.bmm(R1, x.unsqueeze(-1)).squeeze(-1)
+    x_rot2 = torch.bmm(R2, x.unsqueeze(-1)).squeeze(-1)
+
+    h1 = model.forward_with_intermediate(x_rot1, layer_idx)
+    h2 = model.forward_with_intermediate(x_rot2, layer_idx)
+
+    diff = h1 - h2
+    return 0.5 * (diff.pow(2).sum(dim=1)).mean()
+
     
 
 class MLP(nn.Module):

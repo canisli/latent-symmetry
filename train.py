@@ -102,7 +102,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, lambda_sym_min=0
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    model = MLP(3, [128, 128, 128, 128], 1).to(device)
+    model = MLP(3, [128, 128, 128, 128, 128, 128], 1).to(device)
     loss_fn = torch.nn.MSELoss()
     lr = learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
