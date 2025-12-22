@@ -93,40 +93,45 @@ class MLP(nn.Module):
         
         Args:
             x: Input tensor of shape (batch_size, d_in)
-            layer_idx: Layer index (0-based):
-                - i=0: after embed layer
-                - i=1, 2, ...: after the 1st, 2nd, ... hidden layers
-                - i=len(hidden_layers)//2 + 1 or i=-1: after all hidden layers (before proj)
+            layer_idx: Layer index (1-based):
+                - i=1: after embed layer
+                - i=2, 3, ..., num_hidden_layers+1: after the 1st, 2nd, ..., last hidden layers
+                - i=-1: after proj layer (final output)
         
         Returns:
             Activation tensor at the specified layer
         """
-        # Convert -1 to final layer index
         num_hidden_layers = len(self.hidden_layers) // 2
-        if layer_idx == -1:
-            layer_idx = num_hidden_layers + 1
         
-        # Layer 0: after embed
+        # Handle -1 separately (output after proj layer)
+        if layer_idx == -1:
+            h = self.embed(x)
+            for layer in self.hidden_layers:
+                h = layer(h)
+            return self.proj(h)
+        
+        # Layer 1: after embed
         h = self.embed(x)
-        if layer_idx == 0:
+        if layer_idx == 1:
             return h
         
         # Process hidden layers
         # hidden_layers contains pairs: [Linear, ReLU, Linear, ReLU, ...]
         # After each ReLU (odd indices), we complete a hidden layer
+        # Layer 2 is after 1st hidden layer, layer 3 after 2nd, etc.
         for i, layer in enumerate(self.hidden_layers):
             h = layer(h)
-            # After ReLU at odd index, we're at layer (i//2 + 1)
-            # i=1 -> layer 1, i=3 -> layer 2, etc.
+            # After ReLU at odd index, we're at layer (i//2 + 2)
+            # i=1 -> layer 2, i=3 -> layer 3, etc.
             if i % 2 == 1:  # After ReLU
-                current_layer = i // 2 + 1
+                current_layer = i // 2 + 2  # +2 because layer 1 is embed, layer 2 is first hidden
                 if current_layer == layer_idx:
                     return h
         
         # If we get here, we've processed all hidden layers
-        # layer_idx == num_hidden_layers + 1 is the final layer (after all hidden layers)
+        # layer_idx == num_hidden_layers + 1 means after the last hidden layer (before proj)
         if layer_idx == num_hidden_layers + 1:
             return h
         
-        raise ValueError(f"Invalid layer_idx: {layer_idx}. Must be between 0 and {num_hidden_layers + 1}, or -1")
+        raise ValueError(f"Invalid layer_idx: {layer_idx}. Must be between 1 and {num_hidden_layers + 1}, or -1")
 

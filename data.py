@@ -24,6 +24,8 @@ def compute_scalar_field(X):
 
 
 class ScalarFieldDataset(Dataset):
+    functional_form = "exp(-0.5 * R²) * cos(2 * R²)"
+    
     def __init__(self, n_samples, seed=None):
         if seed is not None:
             torch.manual_seed(seed)
@@ -35,4 +37,3 @@ class ScalarFieldDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.X[idx], self.y[idx]
-
