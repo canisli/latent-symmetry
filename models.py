@@ -54,8 +54,15 @@ class MLP(nn.Module):
         self.embed = nn.Linear(d_in, hidden_dims[0])
         
         self.hidden_layers = nn.ModuleList()
-        for i in range(1, len(hidden_dims)):
-            self.hidden_layers.append(nn.Linear(hidden_dims[i-1], hidden_dims[i]))
+        # Create len(hidden_dims) hidden layers
+        # For [128, 128, 128, 128]: creates 4 hidden layers
+        for i in range(len(hidden_dims)):
+            if i == 0:
+                # First hidden layer: from embed output to first hidden dim
+                self.hidden_layers.append(nn.Linear(hidden_dims[0], hidden_dims[0]))
+            else:
+                # Subsequent hidden layers: from previous to current
+                self.hidden_layers.append(nn.Linear(hidden_dims[i-1], hidden_dims[i]))
             self.hidden_layers.append(nn.ReLU())
         
         self.proj = nn.Linear(hidden_dims[-1], d_out)

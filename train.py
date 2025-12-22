@@ -4,6 +4,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import random
+import sys
 
 from models import MLP, so3_orbit_variance_loss
 from data import ScalarFieldDataset
@@ -71,22 +72,23 @@ def evaluate(model, loss_fn, loader, symmetry_layer=None):
             sym_loss /= len(loader)
         return task_loss, sym_loss
 
-def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, lambda_sym_min=0.0, learning_rate=3e-4, seed=42):
+def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e-4, num_hidden_layers=6, seed=42):
     """
     Main training function.
     
     Args:
         headless: If True, skip plotting and visualization
         symmetry_layer: Layer index for symmetry loss (None to disable)
-        lambda_sym_max: Maximum lambda_sym value for 1-cosine schedule
-        lambda_sym_min: Minimum lambda_sym value for 1-cosine schedule
+        lambda_sym_max: Maximum lambda_sym value for 1-cosine schedule (min is always 0.0)
         learning_rate: Learning rate for optimizer
+        num_hidden_layers: Number of hidden layers (each of size 128)
         seed: Random seed for reproducibility
     
     Returns:
         Dictionary with keys: learning_rate, lambda_sym_max, lambda_sym_min, 
         symmetry_layer, test_task_loss, test_sym_loss
     """
+    lambda_sym_min = 0.0  # Always zero
     set_seed(seed)
     
     field = ScalarFieldDataset(10000, seed=seed)
@@ -102,7 +104,12 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, lambda_sym_min=0
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    model = MLP(3, [128, 128, 128, 128, 128, 128], 1).to(device)
+    # Create hidden_dims list: 
+    # Convention: [128, 128, 128, 128] = 4 hidden layers
+    # For num_hidden_layers=4: [128, 128, 128, 128] -> 4 hidden layers
+    # For num_hidden_layers=6: [128, 128, 128, 128, 128, 128] -> 6 hidden layers
+    hidden_dims = [128] * num_hidden_layers
+    model = MLP(3, hidden_dims, 1).to(device)
     loss_fn = torch.nn.MSELoss()
     lr = learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
@@ -188,4 +195,16 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, lambda_sym_min=0
 
 
 if __name__ == '__main__':
-    main()
+    # Parse command-line arguments
+    symmetry_layer = -1
+    lambda_sym_max = 1.0
+    num_hidden_layers = 6
+    
+    if len(sys.argv) > 1:
+        symmetry_layer = int(sys.argv[1])
+    if len(sys.argv) > 2:
+        lambda_sym_max = float(sys.argv[2])
+    if len(sys.argv) > 3:
+        num_hidden_layers = int(sys.argv[3])
+    
+    main(symmetry_layer=symmetry_layer, lambda_sym_max=lambda_sym_max, num_hidden_layers=num_hidden_layers)

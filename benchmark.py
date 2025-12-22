@@ -1,18 +1,19 @@
 import train
 import csv
+import sys
 
-def run_benchmark():
+def run_benchmark(num_hidden_layers=6):
     """
     Run training experiments with different lambda_sym and symmetry_layer values.
     Collects results and outputs to both console and CSV file.
     """
     # Experiment configuration
-    lambda_sym_values = [0.0, 0.1, 0.5, 1.0, 5.0, 10.0]
-    symmetry_layers = [1, 2, 3, 4, 5, 6, -1]
+    lambda_sym_values = [0.0, 0.1, 0.5, 1.0, 5.0, 10.0, 20.0, 100.0]
+    symmetry_layers = list(range(1, num_hidden_layers + 1)) + [-1]  # Layers 1 to num_hidden_layers, plus -1
     learning_rate = 3e-4
     
     results = []
-    csv_filename = 'benchmark_results.csv'
+    csv_filename = f'{num_hidden_layers}_hidden_layers_benchmark_results.csv'
     
     print("Starting benchmark experiments...")
     print(f"Lambda_sym values: {lambda_sym_values}")
@@ -38,8 +39,8 @@ def run_benchmark():
                 headless=True,
                 symmetry_layer=symmetry_layer,
                 lambda_sym_max=lambda_sym_max,
-                lambda_sym_min=0.0,
                 learning_rate=learning_rate,
+                num_hidden_layers=num_hidden_layers,
                 seed=42
             )
             
@@ -72,5 +73,8 @@ def run_benchmark():
 
 
 if __name__ == '__main__':
-    run_benchmark()
+    num_hidden_layers = 6
+    if len(sys.argv) > 1:
+        num_hidden_layers = int(sys.argv[1])
+    run_benchmark(num_hidden_layers)
 

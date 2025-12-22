@@ -1,12 +1,14 @@
 import csv
 from collections import defaultdict
+import sys
 
-def analyze_benchmark_results(csv_filename='benchmark_results.csv'):
+def analyze_benchmark_results(num_hidden_layers=6):
     """
     Read benchmark results and find the best lambda_sym for each symmetry layer.
     Outputs the test task loss and test symmetry loss for the best configuration.
     """
     # Read CSV file
+    csv_filename = f'{num_hidden_layers}_hidden_layers_benchmark_results.csv'
     results = []
     with open(csv_filename, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
@@ -38,7 +40,7 @@ def analyze_benchmark_results(csv_filename='benchmark_results.csv'):
     
     # Print results
     print("="*80)
-    print("BEST LAMBDA_SYM FOR EACH SYMMETRY LAYER")
+    print(csv_filename)
     print("="*80)
     print()
     
@@ -65,5 +67,8 @@ def analyze_benchmark_results(csv_filename='benchmark_results.csv'):
 
 
 if __name__ == '__main__':
-    analyze_benchmark_results()
+    num_hidden_layers = 6
+    if len(sys.argv) > 1:
+        num_hidden_layers = int(sys.argv[1])
+    analyze_benchmark_results(num_hidden_layers)
 
