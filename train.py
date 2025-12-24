@@ -12,8 +12,23 @@ from plots import plot_losses, visualize
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-def set_seed(seed):
-    """Set all random seeds for reproducibility."""
+def derive_seed(run_seed: int, category: str) -> int:
+    """
+    Deterministically derive a seed from a base seed and category name.
+    
+    Args:
+        run_seed: Base seed for the experiment run
+        category: Category name (e.g., "data", "model", "augmentation")
+    
+    Returns:
+        Derived seed value
+    """
+    # Use hash for deterministic derivation
+    # Modulo to ensure valid seed range
+    return hash((run_seed, category)) % (2**31)
+
+def set_model_seed(seed):
+    """Set random seeds for model initialization (weights, dropout, etc.)."""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -22,7 +37,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0):
+def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0, augmentation_generator=None):
     task_batch_losses = []
     sym_batch_losses = []
     model.train()
@@ -37,7 +52,7 @@ def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0
         # Compute symmetry loss if enabled
         sym_loss = 0.0
         if symmetry_layer is not None and lambda_sym > 0:
-            sym_loss = so3_orbit_variance_loss(model, xb, symmetry_layer)
+            sym_loss = so3_orbit_variance_loss(model, xb, symmetry_layer, generator=augmentation_generator)
         
         # Track losses separately
         task_batch_losses.append(task_loss.item())
@@ -53,7 +68,7 @@ def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0
     
     return avg_task_loss, avg_sym_loss, task_batch_losses, sym_batch_losses
 
-def evaluate(model, loss_fn, loader, symmetry_layer=None):
+def evaluate(model, loss_fn, loader, symmetry_layer=None, augmentation_generator=None):
     model.eval()
     with torch.no_grad():
         task_loss = 0
@@ -66,13 +81,13 @@ def evaluate(model, loss_fn, loader, symmetry_layer=None):
             task_loss += loss_fn(pred, yb).item()
             
             if symmetry_layer is not None:
-                sym_loss += so3_orbit_variance_loss(model, xb, symmetry_layer).item()
+                sym_loss += so3_orbit_variance_loss(model, xb, symmetry_layer, generator=augmentation_generator).item()
         task_loss /= len(loader)
         if symmetry_layer is not None:
             sym_loss /= len(loader)
         return task_loss, sym_loss
 
-def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e-4, num_hidden_layers=6, seed=42):
+def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e-4, num_hidden_layers=6, run_seed=42):
     """
     Main training function.
     
@@ -82,34 +97,44 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         lambda_sym_max: Maximum lambda_sym value for 1-cosine schedule (min is always 0.0)
         learning_rate: Learning rate for optimizer
         num_hidden_layers: Number of hidden layers (each of size 128)
-        seed: Random seed for reproducibility
+        run_seed: Base random seed for reproducibility (derives data, model, and augmentation seeds)
     
     Returns:
         Dictionary with keys: learning_rate, lambda_sym_max, lambda_sym_min, 
         symmetry_layer, test_task_loss, test_sym_loss
     """
     lambda_sym_min = 0.0  # Always zero
-    set_seed(seed)
     
-    field = ScalarFieldDataset(10000, seed=seed)
+    # Derive seeds for different randomness sources
+    data_seed = derive_seed(run_seed, "data")
+    model_seed = derive_seed(run_seed, "model")
+    augmentation_seed = derive_seed(run_seed, "augmentation")
+    
+    field = ScalarFieldDataset(10000, seed=data_seed)
     batch_size = 128
     
     # Create generator for reproducible random split
-    generator = torch.Generator().manual_seed(seed)
+    generator = torch.Generator().manual_seed(data_seed)
     train_ds, val_ds, test_ds = torch.utils.data.random_split(field, [0.6, 0.2, 0.2], generator=generator)
     
     # Create generator for reproducible DataLoader shuffling
-    loader_generator = torch.Generator().manual_seed(seed)
+    loader_generator = torch.Generator().manual_seed(data_seed)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, generator=loader_generator)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
+    # Set model seed before model creation
+    set_model_seed(model_seed)
+    
     # Create hidden_dims list: 
     # Convention: [128, 128, 128, 128] = 4 hidden layers
     # For num_hidden_layers=4: [128, 128, 128, 128] -> 4 hidden layers
     # For num_hidden_layers=6: [128, 128, 128, 128, 128, 128] -> 6 hidden layers
     hidden_dims = [128] * num_hidden_layers
     model = MLP(3, hidden_dims, 1).to(device)
+    
+    # Create augmentation generator (will be moved to device when used)
+    augmentation_generator = torch.Generator(device=device).manual_seed(augmentation_seed)
     loss_fn = torch.nn.MSELoss()
     lr = learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
@@ -131,10 +156,10 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         lambda_sym = lambda_sym_min + (lambda_sym_max - lambda_sym_min) * (1 - np.cos(np.pi * progress)) / 2
         lambda_sym_values.append(lambda_sym)
         
-        train_task_loss, train_sym_loss, task_batch_losses, sym_batch_losses = train(model, loss_fn, train_loader, optimizer, symmetry_layer, lambda_sym)
+        train_task_loss, train_sym_loss, task_batch_losses, sym_batch_losses = train(model, loss_fn, train_loader, optimizer, symmetry_layer, lambda_sym, augmentation_generator)
         train_task_batch_losses.extend(task_batch_losses)
         train_sym_batch_losses.extend(sym_batch_losses)
-        val_task_loss, val_sym_loss = evaluate(model, loss_fn, val_loader, symmetry_layer)
+        val_task_loss, val_sym_loss = evaluate(model, loss_fn, val_loader, symmetry_layer, augmentation_generator)
 
         
         train_task_losses.append(train_task_loss)
@@ -149,7 +174,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
             'val': f'{val_task_loss:.2e}',
         })
 
-    test_task_loss, test_sym_loss = evaluate(model, loss_fn, test_loader, symmetry_layer)
+    test_task_loss, test_sym_loss = evaluate(model, loss_fn, test_loader, symmetry_layer, augmentation_generator)
     
     # Print data section
     print('\n' + '='*25)

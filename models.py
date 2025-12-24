@@ -2,9 +2,12 @@ import torch
 import torch.nn as nn
 
 
-def sample_so3_rotation(batch_size, device="cpu", dtype=torch.float32, eps=1e-8):
+def sample_so3_rotation(batch_size, device="cpu", dtype=torch.float32, eps=1e-8, generator=None):
     # Haar on SO(3) via uniform unit quaternions (S^3); q and -q map to same rotation.
-    q = torch.randn(batch_size, 4, device=device, dtype=dtype)
+    if generator is None:
+        q = torch.randn(batch_size, 4, device=device, dtype=dtype)
+    else:
+        q = torch.randn(batch_size, 4, device=device, dtype=dtype, generator=generator)
     q = q / (q.norm(dim=-1, keepdim=True).clamp_min(eps))
 
     w, x, y, z = q.unbind(dim=-1)
@@ -22,13 +25,13 @@ def sample_so3_rotation(batch_size, device="cpu", dtype=torch.float32, eps=1e-8)
     return R
 
 
-def so3_orbit_variance_loss(model, x, layer_idx):
+def so3_orbit_variance_loss(model, x, layer_idx, generator=None):
     B, D = x.shape
     assert D == 3
     device, dtype = x.device, x.dtype
 
-    R1 = sample_so3_rotation(B, device=device, dtype=dtype)
-    R2 = sample_so3_rotation(B, device=device, dtype=dtype)
+    R1 = sample_so3_rotation(B, device=device, dtype=dtype, generator=generator)
+    R2 = sample_so3_rotation(B, device=device, dtype=dtype, generator=generator)
 
     x_rot1 = torch.bmm(R1, x.unsqueeze(-1)).squeeze(-1)
     x_rot2 = torch.bmm(R2, x.unsqueeze(-1)).squeeze(-1)

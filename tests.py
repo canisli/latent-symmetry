@@ -1,13 +1,49 @@
 import torch
-from train import set_seed
+from torch.utils.data import DataLoader
+from train import set_model_seed, derive_seed
 from models import MLP, sample_so3_rotation
 from data import ScalarFieldDataset
 
 
 def test_mlp():
-    set_seed(42)
+    set_model_seed(42)
     mlp = MLP(1, [10], 5)
     assert mlp(torch.rand((100, 1))).shape == (100, 5)
+
+
+def test_weight_initialization_reproducibility():
+    """
+    Test that weight initialization is reproducible with the same seed.
+    Creates two models with the same architecture and seed, and verifies
+    that all weights are identical.
+    """
+    seed = 42
+    
+    # Create first model
+    set_model_seed(seed)
+    model1 = MLP(3, [128, 128, 128], 1)
+    
+    # Create second model with same seed
+    set_model_seed(seed)
+    model2 = MLP(3, [128, 128, 128], 1)
+    
+    # Check that all weights are identical
+    for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+        assert name1 == name2, f"Parameter names don't match: {name1} vs {name2}"
+        assert torch.allclose(param1, param2, atol=1e-7), f"Weights differ for {name1}"
+    
+    # Also verify that different seeds produce different weights
+    set_model_seed(seed + 1)
+    model3 = MLP(3, [128, 128, 128], 1)
+    
+    # At least one weight should differ
+    weights_differ = False
+    for (name1, param1), (name3, param3) in zip(model1.named_parameters(), model3.named_parameters()):
+        if not torch.allclose(param1, param3, atol=1e-7):
+            weights_differ = True
+            break
+    
+    assert weights_differ, "Models with different seeds should have different weights"
 
 
 def test_sample_so3_rotation_uniformity():
@@ -19,7 +55,7 @@ def test_sample_so3_rotation_uniformity():
     2. Distribution is uniform: rotating a fixed vector yields uniform distribution
        on S^2, which has zero mean and variance 1/3 in each coordinate.
     """
-    set_seed(42)
+    set_model_seed(42)
     n_samples = 50000
     
     R = sample_so3_rotation(n_samples)
@@ -61,3 +97,100 @@ def test_sample_so3_rotation_uniformity():
     
     assert mean2.abs().max() < mean_tol, f"Mean (y-axis) not close to zero: {mean2}"
     assert (variance2 - 1/3).abs().max() < var_tol, f"Variance (y-axis) not close to 1/3: {variance2}"
+
+
+def test_data_seed_reproducibility():
+    """
+    Test that data seed produces reproducible datasets, splits, and DataLoader order.
+    """
+    seed = 42
+    n_samples = 1000
+    
+    # Create first dataset with same seed
+    dataset1 = ScalarFieldDataset(n_samples, seed=seed)
+    
+    # Create second dataset with same seed
+    dataset2 = ScalarFieldDataset(n_samples, seed=seed)
+    
+    # Verify datasets are identical
+    assert torch.allclose(dataset1.X, dataset2.X), "Datasets should be identical with same seed"
+    assert torch.allclose(dataset1.y, dataset2.y), "Dataset targets should be identical with same seed"
+    
+    # Test train/test/val split reproducibility
+    generator1 = torch.Generator().manual_seed(seed)
+    generator2 = torch.Generator().manual_seed(seed)
+    train_ds1, val_ds1, test_ds1 = torch.utils.data.random_split(dataset1, [0.6, 0.2, 0.2], generator=generator1)
+    train_ds2, val_ds2, test_ds2 = torch.utils.data.random_split(dataset2, [0.6, 0.2, 0.2], generator=generator2)
+    
+    # Verify splits are identical (check indices)
+    assert train_ds1.indices == train_ds2.indices, "Train splits should be identical"
+    assert val_ds1.indices == val_ds2.indices, "Val splits should be identical"
+    assert test_ds1.indices == test_ds2.indices, "Test splits should be identical"
+    
+    # Test DataLoader shuffling reproducibility
+    loader_gen1 = torch.Generator().manual_seed(seed)
+    loader_gen2 = torch.Generator().manual_seed(seed)
+    loader1 = DataLoader(train_ds1, batch_size=32, shuffle=True, generator=loader_gen1)
+    loader2 = DataLoader(train_ds2, batch_size=32, shuffle=True, generator=loader_gen2)
+    
+    # Get first batch from each loader
+    batch1_x, batch1_y = next(iter(loader1))
+    batch2_x, batch2_y = next(iter(loader2))
+    
+    # Verify batches are identical (same order)
+    assert torch.allclose(batch1_x, batch2_x), "First batches should be identical with same seed"
+    assert torch.allclose(batch1_y, batch2_y), "First batch targets should be identical with same seed"
+    
+    # Verify that different seeds produce different datasets
+    dataset3 = ScalarFieldDataset(n_samples, seed=seed + 1)
+    datasets_differ = not torch.allclose(dataset1.X, dataset3.X, atol=1e-7)
+    assert datasets_differ, "Datasets with different seeds should differ"
+
+
+def test_augmentation_seed_reproducibility():
+    """
+    Test that augmentation seed produces reproducible SO(3) rotations.
+    """
+    seed = 42
+    batch_size = 100
+    
+    # Create generators with same seed
+    generator1 = torch.Generator().manual_seed(seed)
+    generator2 = torch.Generator().manual_seed(seed)
+    
+    # Sample rotations with same generator
+    R1 = sample_so3_rotation(batch_size, generator=generator1)
+    R2 = sample_so3_rotation(batch_size, generator=generator2)
+    
+    # Verify rotations are identical
+    assert torch.allclose(R1, R2, atol=1e-7), "Rotations should be identical with same generator seed"
+    
+    # Test multiple calls with same generator (should produce different rotations)
+    generator3 = torch.Generator().manual_seed(seed)
+    R3_first = sample_so3_rotation(batch_size, generator=generator3)
+    R3_second = sample_so3_rotation(batch_size, generator=generator3)
+    
+    # These should be different (generator advances state)
+    rotations_differ = not torch.allclose(R3_first, R3_second, atol=1e-7)
+    assert rotations_differ, "Consecutive calls with same generator should produce different rotations"
+    
+    # Verify that different seeds produce different rotations
+    generator4 = torch.Generator().manual_seed(seed + 1)
+    R4 = sample_so3_rotation(batch_size, generator=generator4)
+    
+    rotations_differ = not torch.allclose(R1, R4, atol=1e-7)
+    assert rotations_differ, "Rotations with different seeds should differ"
+    
+    # Test derive_seed function produces consistent seeds
+    seed1 = derive_seed(42, "augmentation")
+    seed2 = derive_seed(42, "augmentation")
+    assert seed1 == seed2, "derive_seed should be deterministic"
+    
+    # Test that different categories produce different seeds
+    data_seed = derive_seed(42, "data")
+    model_seed = derive_seed(42, "model")
+    aug_seed = derive_seed(42, "augmentation")
+    
+    assert data_seed != model_seed, "Data and model seeds should differ"
+    assert data_seed != aug_seed, "Data and augmentation seeds should differ"
+    assert model_seed != aug_seed, "Model and augmentation seeds should differ"
