@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 import sys
+import hashlib
 
 from models import MLP, so3_orbit_variance_loss
 from data import ScalarFieldDataset
@@ -23,9 +24,14 @@ def derive_seed(run_seed: int, category: str) -> int:
     Returns:
         Derived seed value
     """
-    # Use hash for deterministic derivation
-    # Modulo to ensure valid seed range
-    return hash((run_seed, category)) % (2**31)
+    # Use hashlib for deterministic derivation across Python sessions
+    # Python's built-in hash() is non-deterministic due to hash randomization
+    seed_str = f"{run_seed}_{category}"
+    seed_bytes = seed_str.encode('utf-8')
+    hash_obj = hashlib.md5(seed_bytes)
+    hash_int = int(hash_obj.hexdigest(), 16)
+
+    return hash_int % (2**31)
 
 def set_model_seed(seed):
     """Set random seeds for model initialization (weights, dropout, etc.)."""

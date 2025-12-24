@@ -1,0 +1,2 @@
+learning_rate,lambda_sym_max,symmetry_layer,test_task_loss,test_sym_loss
+0.0003,0.0,1,6.811441778609151e-05,342.4820785522461

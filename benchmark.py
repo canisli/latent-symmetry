@@ -2,7 +2,7 @@ import train
 import csv
 import sys
 
-def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, csv_filename, fieldnames):
+def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, run_seed, csv_filename, fieldnames):
     """
     Run a single training experiment and save results.
     
@@ -18,7 +18,7 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
         lambda_sym_max=lambda_sym_max,
         learning_rate=learning_rate,
         num_hidden_layers=num_hidden_layers,
-        run_seed=42
+        run_seed=run_seed
     )
     
     result_dict = {
@@ -47,7 +47,7 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
     
     return result_dict
 
-def run_benchmark(num_hidden_layers=6):
+def run_benchmark(num_hidden_layers=6, run_seed=42):
     """
     Run training experiments with different lambda_sym and symmetry_layer values.
     Collects results and outputs to both console and CSV file.
@@ -57,7 +57,7 @@ def run_benchmark(num_hidden_layers=6):
     symmetry_layers = list(range(1, num_hidden_layers + 1)) + [-1]  # Layers 1 to num_hidden_layers, plus -1
     learning_rate = 3e-4
     
-    csv_filename = f'{num_hidden_layers}_hidden_layers_benchmark_results.csv'
+    csv_filename = f'layers={num_hidden_layers}_seed={run_seed}.csv'
     fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
     
     print("Starting benchmark experiments...")
@@ -75,17 +75,20 @@ def run_benchmark(num_hidden_layers=6):
     # Run experiments with symmetry layers
     for lambda_sym_max in lambda_sym_values:
         for symmetry_layer in symmetry_layers:
-            run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, csv_filename, fieldnames)
+            run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, run_seed, csv_filename, fieldnames)
     
     # Run baseline experiment with symmetry_layer=None
-    run_experiment(None, 0.0, learning_rate, num_hidden_layers, csv_filename, fieldnames)
+    run_experiment(None, 0.0, learning_rate, num_hidden_layers, run_seed, csv_filename, fieldnames)
 
     print(f"\nAll results have been saved to {csv_filename}")
 
 
 if __name__ == '__main__':
     num_hidden_layers = 6
+    run_seed = 42
     if len(sys.argv) > 1:
         num_hidden_layers = int(sys.argv[1])
-    run_benchmark(num_hidden_layers)
+    if len(sys.argv) > 2:
+        run_seed = int(sys.argv[2])
+    run_benchmark(num_hidden_layers, run_seed)
 
