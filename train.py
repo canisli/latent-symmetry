@@ -4,10 +4,11 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-import sys
 import hashlib
+import argparse
 
-from models import MLP, so3_orbit_variance_loss
+from models import MLP
+from symmetry import so3_orbit_variance_loss
 from data import ScalarFieldDataset
 from plots import plot_losses, visualize
 
@@ -93,7 +94,7 @@ def evaluate(model, loss_fn, loader, symmetry_layer=None, augmentation_generator
             sym_loss /= len(loader)
         return task_loss, sym_loss
 
-def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e-4, num_hidden_layers=6, run_seed=42):
+def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e-4, num_hidden_layers=6, hidden_dim=128, run_seed=42):
     """
     Main training function.
     
@@ -102,7 +103,8 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         symmetry_layer: Layer index for symmetry loss (None to disable)
         lambda_sym_max: Maximum lambda_sym value for 1-cosine schedule (min is always 0.0)
         learning_rate: Learning rate for optimizer
-        num_hidden_layers: Number of hidden layers (each of size 128)
+        num_hidden_layers: Number of hidden layers
+        hidden_dim: Size of each hidden layer (default: 128)
         run_seed: Base random seed for reproducibility (derives data, model, and augmentation seeds)
     
     Returns:
@@ -133,11 +135,12 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
     set_model_seed(model_seed)
     
     # Create hidden_dims list: 
-    # Convention: [128, 128, 128, 128] = 4 hidden layers
-    # For num_hidden_layers=4: [128, 128, 128, 128] -> 4 hidden layers
-    # For num_hidden_layers=6: [128, 128, 128, 128, 128, 128] -> 6 hidden layers
-    hidden_dims = [128] * num_hidden_layers
-    model = MLP(3, hidden_dims, 1).to(device)
+    # Convention: [hidden_dim, hidden_dim, ...] = num_hidden_layers hidden layers
+    # For num_hidden_layers=4, hidden_dim=128: [128, 128, 128, 128] -> 4 hidden layers
+    # For num_hidden_layers=6, hidden_dim=128: [128, 128, 128, 128, 128, 128] -> 6 hidden layers
+    hidden_dims = [hidden_dim] * num_hidden_layers
+    dims = [3, *hidden_dims, 1]
+    model = MLP(dims).to(device)
     
     # Create augmentation generator (will be moved to device when used)
     augmentation_generator = torch.Generator(device=device).manual_seed(augmentation_seed)
@@ -226,16 +229,39 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
 
 
 if __name__ == '__main__':
-    # Parse command-line arguments
-    symmetry_layer = -1
-    lambda_sym_max = 1.0
-    num_hidden_layers = 6
+    def symmetry_layer_type(value):
+        """Convert string to symmetry_layer value (int, None, or -1)."""
+        if value.lower() == 'none':
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"symmetry_layer must be an integer or 'None', got '{value}'")
     
-    if len(sys.argv) > 1:
-        symmetry_layer = int(sys.argv[1])
-    if len(sys.argv) > 2:
-        lambda_sym_max = float(sys.argv[2])
-    if len(sys.argv) > 3:
-        num_hidden_layers = int(sys.argv[3])
+    parser = argparse.ArgumentParser(description='Train MLP model with symmetry regularization')
+    parser.add_argument('--symmetry-layer', type=symmetry_layer_type, default=-1,
+                        help='Layer index for symmetry loss (-1 for last layer, "None" to disable)')
+    parser.add_argument('--lambda-sym-max', type=float, default=1.0,
+                        help='Maximum lambda_sym value for 1-cosine schedule (default: 1.0)')
+    parser.add_argument('--num-hidden-layers', type=int, default=6,
+                        help='Number of hidden layers (default: 6)')
+    parser.add_argument('--hidden-dim', type=int, default=128,
+                        help='Size of each hidden layer (default: 128)')
+    parser.add_argument('--learning-rate', type=float, default=3e-4,
+                        help='Learning rate for optimizer (default: 3e-4)')
+    parser.add_argument('--run-seed', type=int, default=42,
+                        help='Base random seed for reproducibility (default: 42)')
+    parser.add_argument('--headless', action='store_true',
+                        help='Run in headless mode (skip plotting and visualization)')
     
-    main(symmetry_layer=symmetry_layer, lambda_sym_max=lambda_sym_max, num_hidden_layers=num_hidden_layers)
+    args = parser.parse_args()
+    
+    main(
+        headless=args.headless,
+        symmetry_layer=args.symmetry_layer,
+        lambda_sym_max=args.lambda_sym_max,
+        learning_rate=args.learning_rate,
+        num_hidden_layers=args.num_hidden_layers,
+        hidden_dim=args.hidden_dim,
+        run_seed=args.run_seed
+    )

@@ -1,14 +1,86 @@
 import torch
 from torch.utils.data import DataLoader
 from train import set_model_seed, derive_seed
-from models import MLP, sample_so3_rotation
+from models import MLP
+from symmetry import sample_so3_rotation
 from data import ScalarFieldDataset
 
 
 def test_mlp():
     set_model_seed(42)
-    mlp = MLP(1, [10], 5)
+    mlp = MLP([1, 10, 5])
     assert mlp(torch.rand((100, 1))).shape == (100, 5)
+
+
+def test_forward_with_intermediate():
+    model = MLP([2, 3, 4, 1])
+    
+    # hardcode linear layers
+    with torch.no_grad():
+        model.layers[0].weight.data = torch.tensor([
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0]
+        ])
+        model.layers[0].bias.data = torch.tensor([0.1, 0.2, 0.3])
+        
+        model.layers[2].weight.data = torch.tensor([
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0],
+            [10.0, 11.0, 12.0]
+        ])
+        model.layers[2].bias.data = torch.tensor([0.1, 0.2, 0.3, 0.4])
+        
+        model.layers[4].weight.data = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+        model.layers[4].bias.data = torch.tensor([0.5])
+    
+    # Test input
+    x = torch.tensor([[1.0, 2.0]])
+    
+    # Manual computation for verification
+    # Layer 1: Linear(2 -> 3) + ReLU
+    h1_linear = torch.matmul(x, model.layers[0].weight.t()) + model.layers[0].bias
+    # h1_linear = [1*1 + 2*2 + 0.1, 1*3 + 2*4 + 0.2, 1*5 + 2*6 + 0.3]
+    #           = [1 + 4 + 0.1, 3 + 8 + 0.2, 5 + 12 + 0.3]
+    #           = [5.1, 11.2, 17.3]
+    h1_expected = torch.relu(h1_linear)
+    
+    # Layer 2: Linear(3 -> 4) + ReLU
+    h2_linear = torch.matmul(h1_expected, model.layers[2].weight.t()) + model.layers[2].bias
+    h2_expected = torch.relu(h2_linear)
+    
+    # Layer 3: Linear(4 -> 1) (final output, no activation)
+    h3_expected = torch.matmul(h2_expected, model.layers[4].weight.t()) + model.layers[4].bias
+    
+    # Test layer_idx=1 (after first activation)
+    result1 = model.forward_with_intermediate(x, layer_idx=1)
+    assert torch.allclose(result1, h1_expected, atol=1e-6), \
+        f"Layer 1 mismatch: expected {h1_expected}, got {result1}"
+    
+    # Test layer_idx=2 (after second activation)
+    result2 = model.forward_with_intermediate(x, layer_idx=2)
+    assert torch.allclose(result2, h2_expected, atol=1e-6), \
+        f"Layer 2 mismatch: expected {h2_expected}, got {result2}"
+    
+    # Test layer_idx=-1 (final output)
+    result_final = model.forward_with_intermediate(x, layer_idx=-1)
+    assert torch.allclose(result_final, h3_expected, atol=1e-6), \
+        f"Final output mismatch: expected {h3_expected}, got {result_final}"
+    
+    # Verify that forward() gives same result as layer_idx=-1
+    forward_result = model.forward(x)
+    assert torch.allclose(forward_result, result_final, atol=1e-6), \
+        "forward() should match forward_with_intermediate(..., -1)"
+    
+    # Test with batch of size 2
+    x_batch = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    result1_batch = model.forward_with_intermediate(x_batch, layer_idx=1)
+    # Manually compute for batch
+    h1_batch_linear = torch.matmul(x_batch, model.layers[0].weight.t()) + model.layers[0].bias
+    h1_batch_expected = torch.relu(h1_batch_linear)
+    assert torch.allclose(result1_batch, h1_batch_expected, atol=1e-6), \
+        "Batch processing failed for layer_idx=1"
 
 
 def test_weight_initialization_reproducibility():
@@ -21,11 +93,11 @@ def test_weight_initialization_reproducibility():
     
     # Create first model
     set_model_seed(seed)
-    model1 = MLP(3, [128, 128, 128], 1)
+    model1 = MLP([3, 128, 128, 128, 1])
     
     # Create second model with same seed
     set_model_seed(seed)
-    model2 = MLP(3, [128, 128, 128], 1)
+    model2 = MLP([3, 128, 128, 128, 1])
     
     # Check that all weights are identical
     for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
@@ -34,7 +106,7 @@ def test_weight_initialization_reproducibility():
     
     # Also verify that different seeds produce different weights
     set_model_seed(seed + 1)
-    model3 = MLP(3, [128, 128, 128], 1)
+    model3 = MLP([3, 128, 128, 128, 1])
     
     # At least one weight should differ
     weights_differ = False

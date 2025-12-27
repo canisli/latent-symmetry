@@ -1,8 +1,8 @@
 import train
 import csv
-import sys
+import argparse
 
-def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, run_seed, csv_filename, fieldnames):
+def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames):
     """
     Run a single training experiment and save results.
     
@@ -18,6 +18,7 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
         lambda_sym_max=lambda_sym_max,
         learning_rate=learning_rate,
         num_hidden_layers=num_hidden_layers,
+        hidden_dim=hidden_dim,
         run_seed=run_seed
     )
     
@@ -47,48 +48,138 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
     
     return result_dict
 
-def run_benchmark(num_hidden_layers=6, run_seed=42):
+def run_benchmark(num_hidden_layers=6, hidden_dim=128, run_seeds=[42]):
     """
     Run training experiments with different lambda_sym and symmetry_layer values.
-    Collects results and outputs to both console and CSV file.
+    Can run with multiple seeds, saving each to a separate CSV file.
+    
+    Args:
+        num_hidden_layers: Number of hidden layers
+        hidden_dim: Size of each hidden layer
+        run_seeds: List of seeds to run (each seed gets its own CSV file)
     """
     # Experiment configuration
-    lambda_sym_values = [0.0, 0.1, 0.5, 1.0, 5.0, 10.0, 20.0, 100.0]
+    # lambda_sym_values = [0.0, 0.1, 0.5, 1.0, 5.0, 10.0, 20.0, 100.0]
+    lambda_sym_values = [
+        0,
+        0.001, 0.003,
+        0.01, 0.03,
+        0.1, 0.2, 0.3, 0.5,
+        1.0, 2.0, 3.0, 5.0,
+        10.0, 100.0
+    ]
+
     symmetry_layers = list(range(1, num_hidden_layers + 1)) + [-1]  # Layers 1 to num_hidden_layers, plus -1
-    learning_rate = 3e-4
+    learning_rates = [1e-4, 3e-4, 6e-4]
     
-    csv_filename = f'layers={num_hidden_layers}_seed={run_seed}.csv'
-    fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
     
     print("Starting benchmark experiments...")
     print(f"Lambda_sym values: {lambda_sym_values}")
     print(f"Symmetry layers: {symmetry_layers} + None")
-    print(f"Learning rate: {learning_rate}")
-    print(f"Total experiments: {len(lambda_sym_values) * len(symmetry_layers) + 1}")  # +1 for None case
-    print(f"Results will be saved incrementally to {csv_filename}\n")
+    print(f"Learning rates: {learning_rates}")
+    print(f"Seeds: {run_seeds}")
+    print(f"Total experiments per seed: {len(lambda_sym_values) * len(symmetry_layers) + 1}")  # +1 for None case
+    print(f"Total experiments: {len(run_seeds) * (len(lambda_sym_values) * len(symmetry_layers) + 1)}\n")
     
-    # Open CSV file and write header
-    with open(csv_filename, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-    
-    # Run experiments with symmetry layers
-    for lambda_sym_max in lambda_sym_values:
-        for symmetry_layer in symmetry_layers:
-            run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, run_seed, csv_filename, fieldnames)
-    
-    # Run baseline experiment with symmetry_layer=None
-    run_experiment(None, 0.0, learning_rate, num_hidden_layers, run_seed, csv_filename, fieldnames)
+    # Run for each seed
+    for learning_rate in learning_rates:
+        lr_string = f'{learning_rate:.0e}'.replace('-0','-')
+        for seed_idx, run_seed in enumerate(run_seeds):
+            csv_filename = f'results/layers={num_hidden_layers}x{hidden_dim}_lr={lr_string}_seed={run_seed}.csv'
+            fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
+            
+            print(f"\n{'='*60}")
+            print(f"Running seed {run_seed} ({seed_idx + 1}/{len(run_seeds)})")
+            print(f"{'='*60}")
+            print(f"Results will be saved incrementally to {csv_filename}\n")
+            
+            # Open CSV file and write header
+            with open(csv_filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+            
+            # Run experiments with symmetry layers
+            for lambda_sym_max in lambda_sym_values:
+                for symmetry_layer in symmetry_layers:
+                    run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames)
+            
+            # Run baseline experiment with symmetry_layer=None
+            run_experiment(None, 0.0, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames)
 
-    print(f"\nAll results have been saved to {csv_filename}")
+            print(f"\nSeed {run_seed} complete. Results saved to {csv_filename}")
+    
+    print(f"\n{'='*60}")
+    print(f"All benchmarks complete! Processed {len(run_seeds)} seed(s).")
+    print(f"{'='*60}")
 
+
+def parse_seeds(seed_args):
+    """
+    Parse seed arguments that can include individual seeds, comma-separated seeds, or ranges.
+    
+    Args:
+        seed_args: List of seed arguments (can be individual seeds, comma-separated, or ranges like "63-100")
+    
+    Returns:
+        List of seed integers
+    """
+    seeds = []
+    
+    for arg in seed_args:
+        # Check if it's a range (contains '-')
+        if '-' in arg:
+            try:
+                start, end = arg.split('-')
+                start = int(start.strip())
+                end = int(end.strip())
+                if start > end:
+                    print(f"Warning: Invalid range '{arg}' (start > end). Skipping.")
+                    continue
+                seeds.extend(range(start, end + 1))  # +1 to include end
+            except ValueError:
+                print(f"Warning: Invalid range format '{arg}'. Skipping.")
+                continue
+        # Check if it's comma-separated
+        elif ',' in arg:
+            for s in arg.split(','):
+                try:
+                    seeds.append(int(s.strip()))
+                except ValueError:
+                    print(f"Warning: Invalid seed '{s}'. Skipping.")
+        # Single seed
+        else:
+            try:
+                seeds.append(int(arg))
+            except ValueError:
+                print(f"Warning: Invalid seed '{arg}'. Skipping.")
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_seeds = []
+    for seed in seeds:
+        if seed not in seen:
+            seen.add(seed)
+            unique_seeds.append(seed)
+    
+    return sorted(unique_seeds)
 
 if __name__ == '__main__':
-    num_hidden_layers = 6
-    run_seed = 42
-    if len(sys.argv) > 1:
-        num_hidden_layers = int(sys.argv[1])
-    if len(sys.argv) > 2:
-        run_seed = int(sys.argv[2])
-    run_benchmark(num_hidden_layers, run_seed)
+    parser = argparse.ArgumentParser(description='Run benchmark experiments with different hyperparameters')
+    parser.add_argument('--num-hidden-layers', type=int, default=6,
+                        help='Number of hidden layers (default: 6)')
+    parser.add_argument('--hidden-dim', type=int, default=128,
+                        help='Size of each hidden layer (default: 128)')
+    parser.add_argument('--seeds', nargs='+', default=['42'],
+                        help='Seeds to run (can be individual seeds, comma-separated, or ranges like "63-100"). Default: 42')
+    
+    args = parser.parse_args()
+    
+    # Parse seeds (can be individual seeds, comma-separated, or ranges)
+    run_seeds = parse_seeds(args.seeds)
+    
+    if not run_seeds:
+        print("Error: No valid seeds specified.")
+        exit(1)
+    
+    run_benchmark(num_hidden_layers=args.num_hidden_layers, hidden_dim=args.hidden_dim, run_seeds=run_seeds)
 
