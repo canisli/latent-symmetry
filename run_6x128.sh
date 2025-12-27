@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -p iaifi_gpu
 #SBATCH --ntasks=1
-#SBATCH --time=1-00:00
+#SBATCH --time=2-00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-gpu=1
-#SBATCH --mem-per-cpu=32GB
+#SBATCH --mem-per-cpu=4GB
 #SBATCH -o logs/%j.out  # File to which STDOUT will be written, %j inserts jobid
 #SBATCH -e logs/%j.err  # File to which STDERR will be written, %j inserts jobid
 
