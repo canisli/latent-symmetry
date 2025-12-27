@@ -1,21 +1,7 @@
-# .fasignore - Patterns for files/directories to exclude from fas sync
-# Similar to .gitignore format
-
-# Python virtual environments
 venv/
-
-# Python cache
 __pycache__/
-
-# Version control
 .git/
-
-# IDE directories
 .vscode/
-
-# macOS
 .DS_Store
-
 *.csv
 *.png
-

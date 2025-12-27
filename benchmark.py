@@ -82,9 +82,9 @@ def run_benchmark(num_hidden_layers=6, hidden_dim=128, run_seeds=[42]):
     print(f"Total experiments: {len(run_seeds) * (len(lambda_sym_values) * len(symmetry_layers) + 1)}\n")
     
     # Run for each seed
-    for learning_rate in learning_rates:
-        lr_string = f'{learning_rate:.0e}'.replace('-0','-')
-        for seed_idx, run_seed in enumerate(run_seeds):
+    for seed_idx, run_seed in enumerate(run_seeds):
+        for learning_rate in learning_rates:
+            lr_string = f'{learning_rate:.0e}'.replace('-0','-')
             csv_filename = f'results/layers={num_hidden_layers}x{hidden_dim}_lr={lr_string}_seed={run_seed}.csv'
             fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
             
