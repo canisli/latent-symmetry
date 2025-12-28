@@ -24,7 +24,22 @@ def sample_so3_rotation(batch_size, device="cpu", dtype=torch.float32, eps=1e-8,
     return R
 
 
-def so3_orbit_variance_loss(model, x, layer_idx, generator=None):
+def so3_orbit_variance_loss(model, x, layer_idx, aux_head=None, generator=None):
+    """
+    Compute SO(3) orbit variance loss at a specified layer.
+    
+    Args:
+        model: MLP model with forward_with_intermediate method
+        x: Input tensor of shape (batch_size, 3)
+        layer_idx: Layer index for intermediate activations
+        aux_head: Optional nn.Linear auxiliary head to apply to intermediate
+                  activations before computing variance. If None, uses raw
+                  intermediate activations.
+        generator: Optional torch.Generator for reproducible rotations
+    
+    Returns:
+        Scalar loss tensor
+    """
     B, D = x.shape
     assert D == 3
     device, dtype = x.device, x.dtype
@@ -37,6 +52,11 @@ def so3_orbit_variance_loss(model, x, layer_idx, generator=None):
 
     h1 = model.forward_with_intermediate(x_rot1, layer_idx)
     h2 = model.forward_with_intermediate(x_rot2, layer_idx)
+
+    # Apply auxiliary head if provided
+    if aux_head is not None:
+        h1 = aux_head(h1)
+        h2 = aux_head(h2)
 
     diff = h1 - h2
     return 0.5 * (diff.pow(2).sum(dim=1)).mean()

@@ -44,9 +44,10 @@ def set_model_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0, augmentation_generator=None):
+def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0, mu_head=0.0, augmentation_generator=None):
     task_batch_losses = []
     sym_batch_losses = []
+    head_batch_losses = []
     model.train()
     for xb, yb in loader:
         xb = xb.to(device)
@@ -56,30 +57,43 @@ def train(model, loss_fn, loader, optimizer, symmetry_layer=None, lambda_sym=0.0
         pred = model(xb)
         task_loss = loss_fn(pred, yb)
         
-        # Compute symmetry loss if enabled
+        # Compute symmetry loss if enabled (using auxiliary head if available)
         sym_loss = 0.0
+        head_loss = 0.0
         if symmetry_layer is not None and lambda_sym > 0:
-            sym_loss = so3_orbit_variance_loss(model, xb, symmetry_layer, generator=augmentation_generator)
+            sym_loss = so3_orbit_variance_loss(
+                model, xb, symmetry_layer, 
+                aux_head=model.aux_head, 
+                generator=augmentation_generator
+            )
+        
+        # Compute auxiliary head task loss (deep supervision) if enabled
+        if model.aux_head is not None and mu_head > 0:
+            aux_pred = model.forward_aux_head(xb)
+            head_loss = loss_fn(aux_pred, yb)
         
         # Track losses separately
         task_batch_losses.append(task_loss.item())
         sym_batch_losses.append(sym_loss.item() if isinstance(sym_loss, torch.Tensor) else sym_loss)
+        head_batch_losses.append(head_loss.item() if isinstance(head_loss, torch.Tensor) else head_loss)
         
-        # Total loss for backprop
-        total_loss = task_loss + lambda_sym * sym_loss
+        # Total loss for backprop: L = L_task + λ L_sym + μ L_head
+        total_loss = task_loss + lambda_sym * sym_loss + mu_head * head_loss
         total_loss.backward()
         optimizer.step()
     
     avg_task_loss = sum(task_batch_losses) / len(task_batch_losses)
     avg_sym_loss = sum(sym_batch_losses) / len(sym_batch_losses) if sym_batch_losses else 0.0
+    avg_head_loss = sum(head_batch_losses) / len(head_batch_losses) if head_batch_losses else 0.0
     
-    return avg_task_loss, avg_sym_loss, task_batch_losses, sym_batch_losses
+    return avg_task_loss, avg_sym_loss, avg_head_loss, task_batch_losses, sym_batch_losses, head_batch_losses
 
 def evaluate(model, loss_fn, loader, symmetry_layer=None, augmentation_generator=None):
     model.eval()
     with torch.no_grad():
         task_loss = 0
         sym_loss = 0
+        head_loss = 0
         for xb, yb in loader:
             xb = xb.to(device)
             yb = yb.to(device)
@@ -88,13 +102,24 @@ def evaluate(model, loss_fn, loader, symmetry_layer=None, augmentation_generator
             task_loss += loss_fn(pred, yb).item()
             
             if symmetry_layer is not None:
-                sym_loss += so3_orbit_variance_loss(model, xb, symmetry_layer, generator=augmentation_generator).item()
+                sym_loss += so3_orbit_variance_loss(
+                    model, xb, symmetry_layer, 
+                    aux_head=model.aux_head,
+                    generator=augmentation_generator
+                ).item()
+            
+            if model.aux_head is not None:
+                aux_pred = model.forward_aux_head(xb)
+                head_loss += loss_fn(aux_pred, yb).item()
+                
         task_loss /= len(loader)
         if symmetry_layer is not None:
             sym_loss /= len(loader)
-        return task_loss, sym_loss
+        if model.aux_head is not None:
+            head_loss /= len(loader)
+        return task_loss, sym_loss, head_loss
 
-def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e-4, num_hidden_layers=6, hidden_dim=128, run_seed=42):
+def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, mu_head=0.0, learning_rate=3e-4, num_hidden_layers=6, hidden_dim=128, run_seed=42):
     """
     Main training function.
     
@@ -102,6 +127,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         headless: If True, skip plotting and visualization
         symmetry_layer: Layer index for symmetry loss (None to disable)
         lambda_sym_max: Maximum lambda_sym value for 1-cosine schedule (min is always 0.0)
+        mu_head: Weight for auxiliary head task loss (deep supervision)
         learning_rate: Learning rate for optimizer
         num_hidden_layers: Number of hidden layers
         hidden_dim: Size of each hidden layer (default: 128)
@@ -109,7 +135,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
     
     Returns:
         Dictionary with keys: learning_rate, lambda_sym_max, lambda_sym_min, 
-        symmetry_layer, test_task_loss, test_sym_loss
+        symmetry_layer, mu_head, test_task_loss, test_sym_loss, test_head_loss
     """
     lambda_sym_min = 0.0  # Always zero
     
@@ -140,7 +166,14 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
     # For num_hidden_layers=6, hidden_dim=128: [128, 128, 128, 128, 128, 128] -> 6 hidden layers
     hidden_dims = [hidden_dim] * num_hidden_layers
     dims = [3, *hidden_dims, 1]
-    model = MLP(dims).to(device)
+    
+    # Determine aux_head_layer: only create if symmetry_layer is a valid hidden layer (not -1 or None)
+    # aux_head_layer must be between 1 and num_linear_layers - 1
+    aux_head_layer = None
+    if symmetry_layer is not None and symmetry_layer != -1:
+        aux_head_layer = symmetry_layer
+    
+    model = MLP(dims, aux_head_layer=aux_head_layer).to(device)
     
     # Create augmentation generator (will be moved to device when used)
     augmentation_generator = torch.Generator(device=device).manual_seed(augmentation_seed)
@@ -154,9 +187,12 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
     val_task_losses = []
     train_task_batch_losses = []
     train_sym_batch_losses = []
+    train_head_batch_losses = []
     lambda_sym_values = []
     train_sym_losses = []
     val_sym_losses = []
+    train_head_losses = []
+    val_head_losses = []
     
     for epoch in pbar:
         # Compute lambda_sym with 1-cosine schedule (min to max)
@@ -165,10 +201,13 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         lambda_sym = lambda_sym_min + (lambda_sym_max - lambda_sym_min) * (1 - np.cos(np.pi * progress)) / 2
         lambda_sym_values.append(lambda_sym)
         
-        train_task_loss, train_sym_loss, task_batch_losses, sym_batch_losses = train(model, loss_fn, train_loader, optimizer, symmetry_layer, lambda_sym, augmentation_generator)
+        train_task_loss, train_sym_loss, train_head_loss, task_batch_losses, sym_batch_losses, head_batch_losses = train(
+            model, loss_fn, train_loader, optimizer, symmetry_layer, lambda_sym, mu_head, augmentation_generator
+        )
         train_task_batch_losses.extend(task_batch_losses)
         train_sym_batch_losses.extend(sym_batch_losses)
-        val_task_loss, val_sym_loss = evaluate(model, loss_fn, val_loader, symmetry_layer, augmentation_generator)
+        train_head_batch_losses.extend(head_batch_losses)
+        val_task_loss, val_sym_loss, val_head_loss = evaluate(model, loss_fn, val_loader, symmetry_layer, augmentation_generator)
 
         
         train_task_losses.append(train_task_loss)
@@ -176,14 +215,18 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         avg_train_sym_loss = sum(sym_batch_losses) / len(sym_batch_losses) if sym_batch_losses else 0.0
         train_sym_losses.append(avg_train_sym_loss)
         val_sym_losses.append(val_sym_loss)
+        avg_train_head_loss = sum(head_batch_losses) / len(head_batch_losses) if head_batch_losses else 0.0
+        train_head_losses.append(avg_train_head_loss)
+        val_head_losses.append(val_head_loss)
         
         pbar.set_postfix({
             'task': f'{train_task_loss:.2e}', 
             'sym': f'{train_sym_loss:.2e}',
+            'head': f'{train_head_loss:.2e}',
             'val': f'{val_task_loss:.2e}',
         })
 
-    test_task_loss, test_sym_loss = evaluate(model, loss_fn, test_loader, symmetry_layer, augmentation_generator)
+    test_task_loss, test_sym_loss, test_head_loss = evaluate(model, loss_fn, test_loader, symmetry_layer, augmentation_generator)
     
     # Print data section
     print('\n' + '='*25)
@@ -198,9 +241,10 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
     print('\n' + '='*25)
     print('CONFIGURATION')
     print('='*25)
-    print(f'Learning rate:     {lr:.2e}')
+    print(f'Learning rate:      {lr:.2e}')
     print(f'Symmetry layer:     {symmetry_layer}')
-    print(f'Lambda symmetry:   {lambda_sym_min:.4f} -> {lambda_sym_max:.4f}')
+    print(f'Lambda symmetry:    {lambda_sym_min:.4f} -> {lambda_sym_max:.4f}')
+    print(f'Mu head:            {mu_head:.4f}')
     print('='*25)
     
     # Print results section
@@ -209,6 +253,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
     print('='*25)
     print(f'Test task loss:     {test_task_loss:.4e}')
     print(f'Test symmetry loss: {f"{test_sym_loss:.4e}" if symmetry_layer is not None else "N/A"}')
+    print(f'Test head loss:     {f"{test_head_loss:.4e}" if model.aux_head is not None else "N/A"}')
 
     # Only plot if not in headless mode
     if not headless:
@@ -223,8 +268,10 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, learning_rate=3e
         'lambda_sym_max': lambda_sym_max,
         'lambda_sym_min': lambda_sym_min,
         'symmetry_layer': symmetry_layer,
+        'mu_head': mu_head,
         'test_task_loss': test_task_loss,
-        'test_sym_loss': test_sym_loss if symmetry_layer is not None else None
+        'test_sym_loss': test_sym_loss if symmetry_layer is not None else None,
+        'test_head_loss': test_head_loss if model.aux_head is not None else None
     }
 
 
@@ -243,6 +290,8 @@ if __name__ == '__main__':
                         help='Layer index for symmetry loss (-1 for last layer, "None" to disable)')
     parser.add_argument('--lambda-sym-max', type=float, default=1.0,
                         help='Maximum lambda_sym value for 1-cosine schedule (default: 1.0)')
+    parser.add_argument('--mu-head', type=float, default=0.0,
+                        help='Weight for auxiliary head task loss (deep supervision) (default: 0.0)')
     parser.add_argument('--num-hidden-layers', type=int, default=6,
                         help='Number of hidden layers (default: 6)')
     parser.add_argument('--hidden-dim', type=int, default=128,
@@ -260,6 +309,7 @@ if __name__ == '__main__':
         headless=args.headless,
         symmetry_layer=args.symmetry_layer,
         lambda_sym_max=args.lambda_sym_max,
+        mu_head=args.mu_head,
         learning_rate=args.learning_rate,
         num_hidden_layers=args.num_hidden_layers,
         hidden_dim=args.hidden_dim,
