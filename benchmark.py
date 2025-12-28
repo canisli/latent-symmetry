@@ -1,6 +1,7 @@
 import train
 import csv
 import argparse
+import os
 
 def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames):
     """
@@ -87,6 +88,13 @@ def run_benchmark(num_hidden_layers=6, hidden_dim=128, run_seeds=[42]):
             lr_string = f'{learning_rate:.0e}'.replace('-0','-')
             csv_filename = f'results/layers={num_hidden_layers}x{hidden_dim}_lr={lr_string}_seed={run_seed}.csv'
             fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
+            
+            # Skip if file already exists
+            if os.path.exists(csv_filename):
+                print(f"\n{'='*60}")
+                print(f"Skipping seed {run_seed}, lr={learning_rate:.0e} (file already exists: {csv_filename})")
+                print(f"{'='*60}\n")
+                continue
             
             print(f"\n{'='*60}")
             print(f"Running seed {run_seed} ({seed_idx + 1}/{len(run_seeds)})")
