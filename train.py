@@ -180,7 +180,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, mu_head=0.0, lea
     loss_fn = torch.nn.MSELoss()
     lr = learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
-    num_epochs = 100
+    num_epochs = 200
     
     pbar = tqdm(range(num_epochs))
     train_task_losses = []
@@ -258,7 +258,8 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, mu_head=0.0, lea
     # Only plot if not in headless mode
     if not headless:
         plot_losses(train_task_losses, val_task_losses, train_task_batch_losses, 
-                    train_sym_batch_losses, train_sym_losses, val_sym_losses, lambda_sym_values)
+                    train_sym_batch_losses, train_sym_losses, val_sym_losses, lambda_sym_values,
+                    train_head_batch_losses, train_head_losses, val_head_losses)
         visualize(model, device)
         plt.show()
     

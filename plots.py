@@ -4,7 +4,8 @@ from data import compute_scalar_field
 
 def plot_losses(train_task_losses, val_task_losses, train_task_batch_losses=None,
                 train_sym_batch_losses=None, train_sym_losses=None, val_sym_losses=None,
-                lambda_sym_values=None):
+                lambda_sym_values=None, train_head_batch_losses=None, train_head_losses=None,
+                val_head_losses=None):
     # Create two subplots: one for task loss, one for symmetry loss
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 5))
     
@@ -19,6 +20,19 @@ def plot_losses(train_task_losses, val_task_losses, train_task_batch_losses=None
     # Plot epoch losses on top
     ax1.plot(train_task_losses, label='train (epoch)', linewidth=1, color='k')
     ax1.plot(val_task_losses, label='val', linewidth=1, color='b')
+    
+    # Plot head loss if provided
+    if train_head_batch_losses is not None and len(train_head_batch_losses) > 0:
+        n_batches = len(train_head_batch_losses)
+        n_epochs = len(train_task_losses)
+        batch_x = torch.linspace(0, n_epochs - 1, n_batches).numpy()
+        ax1.plot(batch_x, train_head_batch_losses, alpha=0.3, color='m', linewidth=0.5, label='train head (batch)')
+    
+    if train_head_losses is not None and len(train_head_losses) > 0:
+        ax1.plot(train_head_losses, label='train head (epoch)', linewidth=1, color='m', linestyle='--')
+    if val_head_losses is not None and len(val_head_losses) > 0:
+        ax1.plot(val_head_losses, label='val head', linewidth=1, color='r', linestyle='--')
+    
     ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Task Loss', color='k')
     ax1.tick_params(axis='y', labelcolor='k')
