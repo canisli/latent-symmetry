@@ -180,7 +180,7 @@ def main(headless=False, symmetry_layer=-1, lambda_sym_max=1.0, mu_head=0.0, lea
     loss_fn = torch.nn.MSELoss()
     lr = learning_rate
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)
-    num_epochs = 200
+    num_epochs = 100
     
     pbar = tqdm(range(num_epochs))
     train_task_losses = []

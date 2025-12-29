@@ -3,7 +3,7 @@ import csv
 import argparse
 import os
 
-def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames):
+def run_experiment(symmetry_layer, lambda_sym_max, mu_head, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames):
     """
     Run a single training experiment and save results.
     
@@ -11,12 +11,13 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
         result_dict: Dictionary with experiment results
     """
     layer_str = "None" if symmetry_layer is None else str(symmetry_layer)
-    print(f"Running: lambda_sym_max={lambda_sym_max}, symmetry_layer={layer_str}")
+    print(f"Running: lambda_sym_max={lambda_sym_max}, mu_head={mu_head}, symmetry_layer={layer_str}")
     
     result = train.main(
         headless=True,
         symmetry_layer=symmetry_layer,
         lambda_sym_max=lambda_sym_max,
+        mu_head=mu_head,
         learning_rate=learning_rate,
         num_hidden_layers=num_hidden_layers,
         hidden_dim=hidden_dim,
@@ -26,6 +27,7 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
     result_dict = {
         'learning_rate': result['learning_rate'],
         'lambda_sym_max': result['lambda_sym_max'],
+        'mu_head': result['mu_head'],
         'symmetry_layer': result['symmetry_layer'],
         'test_task_loss': result['test_task_loss'],
         'test_sym_loss': result['test_sym_loss'] if result['test_sym_loss'] is not None else 0.0
@@ -37,6 +39,7 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
         writer.writerow({
             'learning_rate': result_dict['learning_rate'],
             'lambda_sym_max': result_dict['lambda_sym_max'],
+            'mu_head': result_dict['mu_head'],
             'symmetry_layer': '' if result_dict['symmetry_layer'] is None else result_dict['symmetry_layer'],
             'test_task_loss': result_dict['test_task_loss'],
             'test_sym_loss': result_dict['test_sym_loss'] if result_dict['test_sym_loss'] is not None else ''
@@ -51,7 +54,7 @@ def run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_lay
 
 def run_benchmark(num_hidden_layers=6, hidden_dim=128, run_seeds=[42]):
     """
-    Run training experiments with different lambda_sym and symmetry_layer values.
+    Run training experiments with lambda_sym_max=1.0 and mu_head=1.0 across all layers.
     Can run with multiple seeds, saving each to a separate CSV file.
     
     Args:
@@ -60,34 +63,32 @@ def run_benchmark(num_hidden_layers=6, hidden_dim=128, run_seeds=[42]):
         run_seeds: List of seeds to run (each seed gets its own CSV file)
     """
     # Experiment configuration
-    # lambda_sym_values = [0.0, 0.1, 0.5, 1.0, 5.0, 10.0, 20.0, 100.0]
-    lambda_sym_values = [
-        0,
-        0.001, 0.003,
-        0.01, 0.03,
-        0.1, 0.2, 0.3, 0.5,
-        1.0, 2.0, 3.0, 5.0,
-        10.0, 100.0
-    ]
+    lambda_sym_max = 1.0
+    mu_head = 1.0
 
     symmetry_layers = list(range(1, num_hidden_layers + 1)) + [-1]  # Layers 1 to num_hidden_layers, plus -1
-    learning_rates = [1e-4, 3e-4, 6e-4]
+    # learning_rates = [1e-4, 3e-4, 6e-4]
+    learning_rates = [1e-4]
     
     
     print("Starting benchmark experiments...")
-    print(f"Lambda_sym values: {lambda_sym_values}")
+    print(f"Lambda_sym_max: {lambda_sym_max}")
+    print(f"Mu_head: {mu_head}")
     print(f"Symmetry layers: {symmetry_layers} + None")
     print(f"Learning rates: {learning_rates}")
     print(f"Seeds: {run_seeds}")
-    print(f"Total experiments per seed: {len(lambda_sym_values) * len(symmetry_layers) + 1}")  # +1 for None case
-    print(f"Total experiments: {len(run_seeds) * (len(lambda_sym_values) * len(symmetry_layers) + 1)}\n")
+    print(f"Total experiments per seed: {len(symmetry_layers) + 1}")  # +1 for None case
+    print(f"Total experiments: {len(run_seeds) * (len(symmetry_layers) + 1)}\n")
     
     # Run for each seed
     for seed_idx, run_seed in enumerate(run_seeds):
         for learning_rate in learning_rates:
             lr_string = f'{learning_rate:.0e}'.replace('-0','-')
-            csv_filename = f'results/layers={num_hidden_layers}x{hidden_dim}_lr={lr_string}_seed={run_seed}.csv'
-            fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
+            # Create results_supervision directory if it doesn't exist
+            results_dir = 'results_supervision'
+            os.makedirs(results_dir, exist_ok=True)
+            csv_filename = f'{results_dir}/layers={num_hidden_layers}x{hidden_dim}_lr={lr_string}_seed={run_seed}.csv'
+            fieldnames = ['learning_rate', 'lambda_sym_max', 'mu_head', 'symmetry_layer', 'test_task_loss', 'test_sym_loss']
             
             # Skip if file already exists
             if os.path.exists(csv_filename):
@@ -107,12 +108,11 @@ def run_benchmark(num_hidden_layers=6, hidden_dim=128, run_seeds=[42]):
                 writer.writeheader()
             
             # Run experiments with symmetry layers
-            for lambda_sym_max in lambda_sym_values:
-                for symmetry_layer in symmetry_layers:
-                    run_experiment(symmetry_layer, lambda_sym_max, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames)
+            for symmetry_layer in symmetry_layers:
+                run_experiment(symmetry_layer, lambda_sym_max, mu_head, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames)
             
             # Run baseline experiment with symmetry_layer=None
-            run_experiment(None, 0.0, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames)
+            run_experiment(None, lambda_sym_max, mu_head, learning_rate, num_hidden_layers, hidden_dim, run_seed, csv_filename, fieldnames)
 
             print(f"\nSeed {run_seed} complete. Results saved to {csv_filename}")
     
