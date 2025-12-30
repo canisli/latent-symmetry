@@ -21,5 +21,5 @@ export TF_GPU_ALLOCATOR=cuda_malloc_async
 # run code
 export NUMBA_DISABLE_JIT=1
 export HYDRA_FULL_ERROR=1
-cd ~/latent-symmetry
+cd ~/latent-symmetry/supervision
 python benchmark.py --num-hidden-layers 6 --hidden-dim 128 --seeds 1-100
