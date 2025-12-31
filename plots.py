@@ -111,4 +111,4 @@ def visualize(model, device):
     plt.colorbar(im3, ax=axes[2])
     
 
-    plt.savefig('2d_slice_visualization.png', dpi=150, bbox_inches='tight')
+    plt.savefig('2d_slice_visualization./png', dpi=150, bbox_inches='tight')

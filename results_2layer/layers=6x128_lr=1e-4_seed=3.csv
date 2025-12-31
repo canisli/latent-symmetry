@@ -1,0 +1,2 @@
+learning_rate,lambda_sym_1_max,lambda_sym_2_max,test_task_loss,test_sym_loss_1,test_sym_loss_2
+0.0001,0.5,0.5,4.585330941608845e-05,3.580367103950266e-05,6.238732630947652e-06
