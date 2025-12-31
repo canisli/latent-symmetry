@@ -41,3 +41,42 @@ def so3_orbit_variance_loss(model, x, layer_idx, generator=None):
     diff = h1 - h2
     return 0.5 * (diff.pow(2).sum(dim=1)).mean()
 
+
+def so3_orbit_variance_loss_two_layers(model, x, layer_idx_1, layer_idx_2, generator=None):
+    """
+    Compute symmetry loss for two layers simultaneously.
+    
+    Args:
+        model: The MLP model
+        x: Input tensor of shape (batch_size, 3)
+        layer_idx_1: Index of first layer (last hidden layer)
+        layer_idx_2: Index of second layer (output layer, typically -1)
+        generator: Random generator for reproducibility
+    
+    Returns:
+        Tuple of (loss_1, loss_2) - symmetry losses for each layer separately
+    """
+    B, D = x.shape
+    assert D == 3
+    device, dtype = x.device, x.dtype
+
+    R1 = sample_so3_rotation(B, device=device, dtype=dtype, generator=generator)
+    R2 = sample_so3_rotation(B, device=device, dtype=dtype, generator=generator)
+
+    x_rot1 = torch.bmm(R1, x.unsqueeze(-1)).squeeze(-1)
+    x_rot2 = torch.bmm(R2, x.unsqueeze(-1)).squeeze(-1)
+
+    # Compute activations for first layer
+    h1_layer1 = model.forward_with_intermediate(x_rot1, layer_idx_1)
+    h2_layer1 = model.forward_with_intermediate(x_rot2, layer_idx_1)
+    diff1 = h1_layer1 - h2_layer1
+    loss_1 = 0.5 * (diff1.pow(2).sum(dim=1)).mean()
+
+    # Compute activations for second layer
+    h1_layer2 = model.forward_with_intermediate(x_rot1, layer_idx_2)
+    h2_layer2 = model.forward_with_intermediate(x_rot2, layer_idx_2)
+    diff2 = h1_layer2 - h2_layer2
+    loss_2 = 0.5 * (diff2.pow(2).sum(dim=1)).mean()
+
+    return loss_1, loss_2
+

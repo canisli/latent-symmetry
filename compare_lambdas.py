@@ -14,6 +14,8 @@ Example:
 import csv
 import sys
 import re
+import glob
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from collections import defaultdict
@@ -127,6 +129,109 @@ def extract_learning_rate_from_filename(filename):
     if match:
         return match.group(1)
     return None
+
+def load_baseline_data(layers_spec, learning_rate, lambda_sym_1_max=0.5, lambda_sym_2_max=0.5):
+    """
+    Load baseline data from results_2layer directory for a given layer configuration and learning rate.
+    Only includes rows matching the specified lambda values.
+    
+    Args:
+        layers_spec: String like "4x256" or "6x128"
+        learning_rate: String like "1e-4"
+        lambda_sym_1_max: Lambda value for symmetry loss 1 to filter (default: 0.5)
+        lambda_sym_2_max: Lambda value for symmetry loss 2 to filter (default: 0.5)
+        
+    Returns:
+        Dictionary with 'task_loss', 'sym_loss_1', and 'sym_loss_2' lists aggregated across all seeds
+    """
+    # Find all CSV files matching the pattern in results_2layer
+    pattern = f'results_2layer/layers={layers_spec}_lr={learning_rate}_seed=*.csv'
+    csv_files = glob.glob(pattern)
+    
+    if not csv_files:
+        return None
+    
+    # Aggregate task_loss and sym_loss values across all files, filtering by lambda values
+    task_losses = []
+    sym_losses_1 = []
+    sym_losses_2 = []
+    
+    for csv_file in csv_files:
+        try:
+            with open(csv_file, 'r') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    # Filter rows matching the specified lambda values
+                    row_lambda_1 = float(row['lambda_sym_1_max'])
+                    row_lambda_2 = float(row['lambda_sym_2_max'])
+                    
+                    if row_lambda_1 == lambda_sym_1_max and row_lambda_2 == lambda_sym_2_max:
+                        task_loss = float(row['test_task_loss'])
+                        task_losses.append(task_loss)
+                        
+                        sym_loss_1 = float(row['test_sym_loss_1'])
+                        sym_loss_2 = float(row['test_sym_loss_2'])
+                        sym_losses_1.append(sym_loss_1)
+                        sym_losses_2.append(sym_loss_2)
+        except Exception as e:
+            print(f"Warning: Could not read {csv_file}: {e}")
+            continue
+    
+    if not task_losses:
+        return None
+    
+    return {'task_loss': task_losses, 'sym_loss_1': sym_losses_1, 'sym_loss_2': sym_losses_2}
+
+def compute_baseline_stats(data):
+    """
+    Compute mean and 95% CI for baseline data.
+    
+    Args:
+        data: Dictionary with 'task_loss', 'sym_loss_1', and 'sym_loss_2' lists
+        
+    Returns:
+        Dictionary with mean and CI for task_loss and sym_loss (combined sym_loss_1 + sym_loss_2)
+    """
+    stats_dict = {}
+    
+    # Task loss statistics
+    task_losses = data['task_loss']
+    n = len(task_losses)
+    task_mean = np.mean(task_losses)
+    if n > 1:
+        task_std = np.std(task_losses, ddof=1)
+        task_sem = task_std / np.sqrt(n)
+        task_t_critical = stats.t.ppf(0.975, n - 1)
+        task_ci = task_t_critical * task_sem
+    else:
+        task_ci = 0.0
+    
+    stats_dict['task_mean'] = task_mean
+    stats_dict['task_ci'] = task_ci
+    
+    # Symmetry loss statistics (combine sym_loss_1 and sym_loss_2)
+    sym_losses_1 = data['sym_loss_1']
+    sym_losses_2 = data['sym_loss_2']
+    # Combine the two symmetry losses
+    sym_losses = [s1 + s2 for s1, s2 in zip(sym_losses_1, sym_losses_2)]
+    
+    if sym_losses:
+        n_sym = len(sym_losses)
+        sym_mean = np.mean(sym_losses)
+        if n_sym > 1:
+            sym_std = np.std(sym_losses, ddof=1)
+            sym_sem = sym_std / np.sqrt(n_sym)
+            sym_t_critical = stats.t.ppf(0.975, n_sym - 1)
+            sym_ci = sym_t_critical * sym_sem
+        else:
+            sym_ci = 0.0
+        stats_dict['sym_mean'] = sym_mean
+        stats_dict['sym_ci'] = sym_ci
+    else:
+        stats_dict['sym_mean'] = None
+        stats_dict['sym_ci'] = None
+    
+    return stats_dict
 
 def parse_layer_spec(layer_spec):
     """
@@ -263,6 +368,55 @@ def plot_all_layers(csv_files, layers_to_plot=None):
     for layer in sorted_layers:
         if layer is not None:
             all_lambdas.extend(layer_stats[layer]['lambda'])
+    
+    # Detect layer configuration from input files to determine which baseline to show
+    input_layers_spec = extract_layers_from_filename(csv_files[0])
+    
+    # Load and plot baseline data - only show the matching baseline
+    baseline_configs = {
+        '4x256': ('4x256', '1e-4'),
+        '6x128': ('6x128', '1e-4')
+    }
+    
+    if all_lambdas and input_layers_spec in baseline_configs:
+        x_min = min(all_lambdas)
+        x_max = max(all_lambdas)
+        
+        layers_spec, lr = baseline_configs[input_layers_spec]
+        baseline_data = load_baseline_data(layers_spec, lr)
+        if baseline_data:
+            baseline_stats = compute_baseline_stats(baseline_data)
+            
+            # Plot task loss baseline
+            ax1.axhline(y=baseline_stats['task_mean'], 
+                       color='gray', 
+                       linestyle='--',
+                       linewidth=1.5, 
+                       alpha=0.7,
+                       label='2-layer-penalty')
+            
+            # Shade 95% confidence interval area for task loss
+            ax1.fill_between([x_min, x_max], 
+                             baseline_stats['task_mean'] - baseline_stats['task_ci'], 
+                             baseline_stats['task_mean'] + baseline_stats['task_ci'],
+                             color='gray', alpha=0.15)
+            
+            # Plot symmetry loss baseline if available
+            if baseline_stats['sym_mean'] is not None:
+                ax2.axhline(y=baseline_stats['sym_mean'], 
+                           color='gray', 
+                           linestyle='--',
+                           linewidth=1.5, 
+                           alpha=0.7,
+                           label='2-layer-penalty')
+                
+                # Shade 95% confidence interval area for symmetry loss
+                ax2.fill_between([x_min, x_max], 
+                                 baseline_stats['sym_mean'] - baseline_stats['sym_ci'], 
+                                 baseline_stats['sym_mean'] + baseline_stats['sym_ci'],
+                                 color='gray', alpha=0.15)
+        else:
+            print(f"Warning: Could not load baseline data for {layers_spec} lr={lr}")
     
     for idx, layer in enumerate(sorted_layers):
         lambda_values = np.array(layer_stats[layer]['lambda'])
