@@ -13,6 +13,21 @@ from data.kp_dataset import make_kp_dataloader, estimate_input_scale
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+
+def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps, min_lr_ratio=0.01):
+    """
+    Create a schedule with linear warmup and cosine decay.
+    """
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            # Linear warmup
+            return float(current_step) / float(max(1, num_warmup_steps))
+        # Cosine decay
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(min_lr_ratio, 0.5 * (1.0 + math.cos(math.pi * progress)))
+    
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
 def derive_seed(run_seed: int, category: str) -> int:
     """
     Deterministically derive a seed from a base seed and category name.
@@ -66,7 +81,7 @@ def _accumulate_regression_stats(sum_sq_error: float, sum_y: float, sum_y_sq: fl
     return mse, rel_rmse
 
 
-def train(model, loss_fn, loader, optimizer):
+def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
     """Training loop."""
     task_batch_losses = []
     sum_sq_error = 0.0
@@ -96,7 +111,16 @@ def train(model, loss_fn, loader, optimizer):
         
         # Backprop
         task_loss.backward()
+        
+        # Gradient clipping
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        
         optimizer.step()
+        
+        # Step scheduler per batch for warmup
+        if scheduler is not None:
+            scheduler.step()
     
     avg_task_loss = sum(task_batch_losses) / len(task_batch_losses)
     _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
@@ -132,7 +156,9 @@ def evaluate(model, loss_fn, loader):
 
 def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128, 
          num_heads=4, num_events=10_000, n_particles=128, batch_size=256, 
-         num_epochs=10, run_seed=42, input_scale=None, input_scale_events=2000):
+         num_epochs=10, run_seed=42, input_scale=None, input_scale_events=2000,
+         model_type='deepsets', warmup_epochs=5, weight_decay=0.01, grad_clip=1.0,
+         dropout=0.0):
     """
     Main training function.
     
@@ -147,6 +173,11 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
         batch_size: Batch size
         num_epochs: Number of training epochs
         run_seed: Base random seed for reproducibility
+        model_type: 'deepsets' or 'transformer'
+        warmup_epochs: Number of warmup epochs for LR scheduler
+        weight_decay: Weight decay for AdamW
+        grad_clip: Gradient clipping max norm
+        dropout: Dropout probability
     
     Returns:
         Dictionary with training results
@@ -196,17 +227,38 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
     # Input: 4 channels (E, px, py, pz)
     # Output: 1 KP value (from edges_list = [[(0, 1), (0, 2), (0, 3)]])
     num_kps = 1
-    model = DeepSets(
-        in_channels=4,
-        out_channels=num_kps,
-        hidden_channels=hidden_channels,
-        num_phi_layers=num_blocks,  # Use num_blocks for phi layers
-        num_rho_layers=num_blocks,  # Use num_blocks for rho layers
-        pool_mode='sum',  # Sum pooling preserves particle magnitudes
-    ).to(device)
+    
+    if model_type == 'deepsets':
+        model = DeepSets(
+            in_channels=4,
+            out_channels=num_kps,
+            hidden_channels=hidden_channels,
+            num_phi_layers=num_blocks,
+            num_rho_layers=num_blocks,
+            pool_mode='sum',
+        ).to(device)
+    elif model_type == 'transformer':
+        model = Transformer(
+            in_channels=4,
+            out_channels=num_kps,
+            hidden_channels=hidden_channels,
+            num_blocks=num_blocks,
+            num_heads=num_heads,
+            use_mean_pooling=True,
+            dropout_prob=dropout if dropout > 0 else None,
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown model_type: {model_type}")
     
     loss_fn = torch.nn.MSELoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.0)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    
+    # Calculate total training steps for scheduler
+    steps_per_epoch = len(train_loader)
+    total_steps = num_epochs * steps_per_epoch
+    warmup_steps = warmup_epochs * steps_per_epoch
+    
+    scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
     
     # Training loop
     pbar = tqdm(range(num_epochs))
@@ -215,9 +267,13 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
     train_task_batch_losses = []
     train_rel_rmses = []
     val_rel_rmses = []
+    best_val_rmse = float('inf')
+    best_model_state = None
     
     for epoch in pbar:
-        train_task_loss, task_batch_losses, train_rel_rmse = train(model, loss_fn, train_loader, optimizer)
+        train_task_loss, task_batch_losses, train_rel_rmse = train(
+            model, loss_fn, train_loader, optimizer, scheduler, grad_clip
+        )
         val_task_loss, val_rel_rmse = evaluate(model, loss_fn, val_loader)
         
         train_task_losses.append(train_task_loss)
@@ -226,10 +282,20 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
         train_rel_rmses.append(train_rel_rmse)
         val_rel_rmses.append(val_rel_rmse)
         
+        # Track best model
+        if val_rel_rmse < best_val_rmse:
+            best_val_rmse = val_rel_rmse
+            best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        
         pbar.set_postfix({
             'train_rel_rmse': f'{train_rel_rmse:.3f}',
             'val_rel_rmse': f'{val_rel_rmse:.3f}',
+            'best_val': f'{best_val_rmse:.3f}',
         })
+    
+    # Load best model for final evaluation
+    if best_model_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
     
     test_task_loss, test_rel_rmse = evaluate(model, loss_fn, test_loader)
     
@@ -249,11 +315,16 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
     print('\n' + '='*25)
     print('CONFIGURATION')
     print('='*25)
-    print(f'Model:             DeepSets')
+    print(f'Model:             {model_type.capitalize()}')
     print(f'Learning rate:     {learning_rate:.2e}')
     print(f'Num layers:        {num_blocks}')
     print(f'Hidden channels:   {hidden_channels}')
+    if model_type == 'transformer':
+        print(f'Num heads:         {num_heads}')
     print(f'Batch size:        {batch_size}')
+    print(f'Weight decay:      {weight_decay}')
+    print(f'Warmup epochs:     {warmup_epochs}')
+    print(f'Grad clip:         {grad_clip}')
     print(f'Input scale:       {input_scale:.3e}')
     print('='*25)
     
@@ -292,33 +363,35 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
     
     # Return results dictionary
     return {
+        'model_type': model_type,
         'learning_rate': learning_rate,
         'num_blocks': num_blocks,
         'hidden_channels': hidden_channels,
         'num_heads': num_heads,
         'test_task_loss': test_task_loss,
         'test_relative_rmse': test_rel_rmse,
+        'best_val_relative_rmse': best_val_rmse,
     }
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train Transformer model for kinematic polynomial prediction')
+    parser = argparse.ArgumentParser(description='Train model for kinematic polynomial prediction')
     parser.add_argument('--num-particles', type=int, default=128,
                         help='Max particles per event (default: 128)')
-    parser.add_argument('--num-events', type=int, default=10_000,
-                        help='Number of training events (default: 10_000)')
-    parser.add_argument('--num-blocks', type=int, default=4,
-                        help='Number of transformer blocks (default: 4)')
-    parser.add_argument('--hidden-channels', type=int, default=128,
-                        help='Hidden dimension (default: 128)')
-    parser.add_argument('--num-heads', type=int, default=4,
-                        help='Number of attention heads (default: 4)')
-    parser.add_argument('--learning-rate', type=float, default=3e-4,
-                        help='Learning rate for optimizer (default: 3e-4)')
+    parser.add_argument('--num-events', type=int, default=50_000,
+                        help='Number of training events (default: 50_000)')
+    parser.add_argument('--num-blocks', type=int, default=6,
+                        help='Number of transformer blocks (default: 6)')
+    parser.add_argument('--hidden-channels', type=int, default=256,
+                        help='Hidden dimension (default: 256)')
+    parser.add_argument('--num-heads', type=int, default=8,
+                        help='Number of attention heads (default: 8)')
+    parser.add_argument('--learning-rate', type=float, default=1e-3,
+                        help='Learning rate for optimizer (default: 1e-3)')
     parser.add_argument('--batch-size', type=int, default=256,
                         help='Batch size (default: 256)')
     parser.add_argument('--num-epochs', type=int, default=100,
-                        help='Number of training epochs (default: 10)')
+                        help='Number of training epochs (default: 100)')
     parser.add_argument('--run-seed', type=int, default=42,
                         help='Base random seed for reproducibility (default: 42)')
     parser.add_argument('--headless', action='store_true',
@@ -327,6 +400,17 @@ if __name__ == '__main__':
                         help='Optional global scale to divide inputs by (default: auto-estimate)')
     parser.add_argument('--input-scale-events', type=int, default=2000,
                         help='Number of events to sample when auto-estimating input scale')
+    parser.add_argument('--model-type', type=str, default='transformer',
+                        choices=['deepsets', 'transformer'],
+                        help='Model architecture (default: transformer)')
+    parser.add_argument('--warmup-epochs', type=int, default=5,
+                        help='Number of warmup epochs for LR scheduler (default: 5)')
+    parser.add_argument('--weight-decay', type=float, default=0.01,
+                        help='Weight decay for AdamW (default: 0.01)')
+    parser.add_argument('--grad-clip', type=float, default=1.0,
+                        help='Gradient clipping max norm (default: 1.0)')
+    parser.add_argument('--dropout', type=float, default=0.0,
+                        help='Dropout probability (default: 0.0)')
     
     args = parser.parse_args()
     
@@ -343,5 +427,10 @@ if __name__ == '__main__':
         run_seed=args.run_seed,
         input_scale=args.input_scale,
         input_scale_events=args.input_scale_events,
+        model_type=args.model_type,
+        warmup_epochs=args.warmup_epochs,
+        weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
+        dropout=args.dropout,
     )
 
