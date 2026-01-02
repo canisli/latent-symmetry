@@ -227,58 +227,53 @@ def evaluate(
         _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
         return task_loss, rel_rmse, sym_loss
 
-@hydra.main(version_base=None, config_path="config", config_name="config")
-def main(cfg: DictConfig):
+def run_training(
+    # Data params
+    num_events: int = 10000,
+    n_particles: int = 128,
+    batch_size: int = 256,
+    input_scale: float = 0.9515689,
+    train_split: float = 0.6,
+    val_split: float = 0.2,
+    test_split: float = 0.2,
+    # Training params
+    num_epochs: int = 100,
+    learning_rate: float = 0.001,
+    warmup_epochs: int = 5,
+    weight_decay: float = 0.0,
+    grad_clip: float = None,
+    dropout: float = 0.0,
+    early_stopping_patience: int = None,
+    # Model params
+    model_type: str = 'deepsets',
+    hidden_channels: int = 128,
+    num_phi_layers: int = None,
+    num_rho_layers: int = None,
+    pool_mode: str = 'sum',
+    num_blocks: int = None,
+    num_heads: int = None,
+    use_mean_pooling: bool = True,
+    dropout_prob: float = None,
+    multi_query: bool = False,
+    increase_hidden_channels: int = 1,
+    checkpoint_blocks: bool = False,
+    # Symmetry params
+    symmetry_enabled: bool = False,
+    symmetry_layer: int = None,
+    lambda_sym_max: float = 1.0,
+    std_eta: float = 0.5,
+    # Other
+    run_seed: int = 42,
+    headless: bool = False,
+):
     """
-    Main training function using Hydra configuration.
-    
-    Args:
-        cfg: Hydra configuration object
+    Core training function that can be called directly.
     
     Returns:
-        Dictionary with training results
+        Dictionary with training results including:
+        - test_task_loss, test_relative_rmse, test_sym_loss (if symmetry enabled)
+        - model and training configuration
     """
-    # Print configuration
-    print('\n' + '='*60)
-    print('CONFIGURATION')
-    print('='*60)
-    print(OmegaConf.to_yaml(cfg))
-    print('='*60 + '\n')
-    
-    # Extract config values
-    headless = cfg.headless
-    learning_rate = cfg.training.learning_rate
-    hidden_channels = cfg.model.hidden_channels
-    num_events = cfg.data.num_events
-    n_particles = cfg.data.n_particles
-    batch_size = cfg.data.batch_size
-    num_epochs = cfg.training.num_epochs
-    run_seed = cfg.run_seed
-    input_scale = cfg.data.input_scale
-    model_type = cfg.model.type
-    warmup_epochs = cfg.training.warmup_epochs
-    weight_decay = cfg.training.weight_decay
-    grad_clip = cfg.training.grad_clip
-    dropout = cfg.training.dropout
-    
-    # Model-specific parameters
-    if model_type == 'deepsets':
-        num_phi_layers = cfg.model.num_phi_layers
-        num_rho_layers = cfg.model.num_rho_layers
-        num_blocks = None  # Not used for DeepSets
-        num_heads = None  # Not used for DeepSets
-    else:  # transformer
-        num_blocks = cfg.model.num_blocks
-        num_heads = cfg.model.num_heads
-        num_phi_layers = None  # Not used for Transformer
-        num_rho_layers = None  # Not used for Transformer
-    
-    # Symmetry loss parameters
-    symmetry_enabled = cfg.get('symmetry', {}).get('enabled', False)
-    symmetry_layer = cfg.get('symmetry', {}).get('layer_idx', -1) if symmetry_enabled else None
-    lambda_sym_max = cfg.get('symmetry', {}).get('lambda_sym_max', 1.0)
-    std_eta = cfg.get('symmetry', {}).get('std_eta', 0.5)
-    
     # Derive seeds for different randomness sources
     data_seed = derive_seed(run_seed, "data")
     model_seed = derive_seed(run_seed, "model")
@@ -293,19 +288,19 @@ def main(cfg: DictConfig):
     
     # Build dataloaders 
     train_loader = build_dataloader(
-        n_events=int(num_events * cfg.data.train_split),
+        n_events=int(num_events * train_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
     )
     val_loader = build_dataloader(
-        n_events=int(num_events * cfg.data.val_split),
+        n_events=int(num_events * val_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
     )
     test_loader = build_dataloader(
-        n_events=int(num_events * cfg.data.test_split),
+        n_events=int(num_events * test_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
@@ -323,23 +318,21 @@ def main(cfg: DictConfig):
             hidden_channels=hidden_channels,
             num_phi_layers=num_phi_layers,
             num_rho_layers=num_rho_layers,
-            pool_mode=cfg.model.get('pool_mode', 'sum'),
+            pool_mode=pool_mode,
         ).to(device)
     elif model_type == 'transformer':
-        dropout_prob = dropout if dropout > 0 else None
-        if dropout_prob is None:
-            dropout_prob = cfg.model.get('dropout_prob')
+        _dropout_prob = dropout if dropout > 0 else dropout_prob
         model = Transformer(
             in_channels=4,
             out_channels=num_kps,
             hidden_channels=hidden_channels,
             num_blocks=num_blocks,
             num_heads=num_heads,
-            use_mean_pooling=cfg.model.get('use_mean_pooling', True),
-            dropout_prob=dropout_prob,
-            multi_query=cfg.model.get('multi_query', False),
-            increase_hidden_channels=cfg.model.get('increase_hidden_channels', 1),
-            checkpoint_blocks=cfg.model.get('checkpoint_blocks', False),
+            use_mean_pooling=use_mean_pooling,
+            dropout_prob=_dropout_prob,
+            multi_query=multi_query,
+            increase_hidden_channels=increase_hidden_channels,
+            checkpoint_blocks=checkpoint_blocks,
         ).to(device)
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
@@ -357,11 +350,8 @@ def main(cfg: DictConfig):
     
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
     
-    # Early stopping configuration
-    early_stopping_patience = cfg.training.get('early_stopping_patience', None)
-    
     # Training loop
-    pbar = tqdm(range(num_epochs))
+    pbar = tqdm(range(num_epochs), disable=headless)
     train_task_losses = []
     val_task_losses = []
     train_task_batch_losses = []
@@ -424,7 +414,6 @@ def main(cfg: DictConfig):
         # Early stopping check
         if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
             print(f"\nEarly stopping at epoch {epoch + 1} (no improvement for {early_stopping_patience} epochs)")
-            break
     
     # Load best model for final evaluation
     if best_model_state is not None:
@@ -437,54 +426,53 @@ def main(cfg: DictConfig):
         augmentation_generator=augmentation_generator,
     )
     
-    # Print data section
-    print('\n' + '='*25)
-    print('DATA')
-    print('='*25)
-    print(f'Number of training events: {int(num_events * cfg.data.train_split)}')
-    print(f'Number of validation events: {int(num_events * cfg.data.val_split)}')
-    print(f'Number of test events: {int(num_events * cfg.data.test_split)}')
-    print(f'Max particles per event: {n_particles}')
-    print(f'Number of epochs: {len(train_task_losses)}')
-    print(f'Kinematic polynomial: edges_list = [[(0, 1), (0, 2), (0, 3)]]')
-    print('='*25)
-    
-    # Print configuration section
-    print('\n' + '='*25)
-    print('CONFIGURATION')
-    print('='*25)
-    print(f'Model:             {model_type.capitalize()}')
-    print(f'Learning rate:     {learning_rate:.2e}')
-    if model_type == 'deepsets':
-        print(f'Num phi layers:    {num_phi_layers}')
-        print(f'Num rho layers:    {num_rho_layers}')
-    else:  # transformer
-        print(f'Num blocks:        {num_blocks}')
-        print(f'Num heads:         {num_heads}')
-    print(f'Hidden channels:   {hidden_channels}')
-    print(f'Batch size:        {batch_size}')
-    print(f'Weight decay:      {weight_decay}')
-    print(f'Warmup epochs:     {warmup_epochs}')
-    print(f'Grad clip:         {grad_clip}')
-    print(f'Input scale:       {input_scale:.3e}')
-    if symmetry_enabled:
-        print(f'Symmetry layer:    {symmetry_layer}')
-        print(f'Lambda sym max:    {lambda_sym_max}')
-        print(f'Std eta:           {std_eta}')
-    print('='*25)
-    
-    # Print results section
-    print('\n' + '='*25)
-    print('RESULTS')
-    print('='*25)
-    print(f'Test task loss:     {test_task_loss:.4e}')
-    print(f'Test relative RMSE: {test_rel_rmse:.4f}')
-    if symmetry_enabled:
-        print(f'Test symmetry loss: {test_sym_loss:.4e}')
-    print('='*25)
-    
-    # Only plot if not in headless mode
     if not headless:
+        # Print data section
+        print('\n' + '='*25)
+        print('DATA')
+        print('='*25)
+        print(f'Number of training events: {int(num_events * train_split)}')
+        print(f'Number of validation events: {int(num_events * val_split)}')
+        print(f'Number of test events: {int(num_events * test_split)}')
+        print(f'Max particles per event: {n_particles}')
+        print(f'Number of epochs: {len(train_task_losses)}')
+        print(f'Kinematic polynomial: edges_list = [[(0, 1), (0, 2), (0, 3)]]')
+        print('='*25)
+        
+        # Print configuration section
+        print('\n' + '='*25)
+        print('CONFIGURATION')
+        print('='*25)
+        print(f'Model:             {model_type.capitalize()}')
+        print(f'Learning rate:     {learning_rate:.2e}')
+        if model_type == 'deepsets':
+            print(f'Num phi layers:    {num_phi_layers}')
+            print(f'Num rho layers:    {num_rho_layers}')
+        else:  # transformer
+            print(f'Num blocks:        {num_blocks}')
+            print(f'Num heads:         {num_heads}')
+        print(f'Hidden channels:   {hidden_channels}')
+        print(f'Batch size:        {batch_size}')
+        print(f'Weight decay:      {weight_decay}')
+        print(f'Warmup epochs:     {warmup_epochs}')
+        print(f'Grad clip:         {grad_clip}')
+        print(f'Input scale:       {input_scale:.3e}')
+        if symmetry_enabled:
+            print(f'Symmetry layer:    {symmetry_layer}')
+            print(f'Lambda sym max:    {lambda_sym_max}')
+            print(f'Std eta:           {std_eta}')
+        print('='*25)
+        
+        # Print results section
+        print('\n' + '='*25)
+        print('RESULTS')
+        print('='*25)
+        print(f'Test task loss:     {test_task_loss:.4e}')
+        print(f'Test relative RMSE: {test_rel_rmse:.4f}')
+        if symmetry_enabled:
+            print(f'Test symmetry loss: {test_sym_loss:.4e}')
+        print('='*25)
+        
         # Simple loss plot
         fig, ax = plt.subplots(1, 1, figsize=(10, 6))
         
@@ -529,6 +517,78 @@ def main(cfg: DictConfig):
         result['std_eta'] = std_eta
         result['test_sym_loss'] = test_sym_loss
     return result
+
+
+@hydra.main(version_base=None, config_path="config", config_name="config")
+def main(cfg: DictConfig):
+    """
+    Main entry point using Hydra configuration.
+    Extracts config values and calls run_training().
+    """
+    # Print configuration
+    print('\n' + '='*60)
+    print('CONFIGURATION')
+    print('='*60)
+    print(OmegaConf.to_yaml(cfg))
+    print('='*60 + '\n')
+    
+    # Extract model-specific parameters
+    if cfg.model.type == 'deepsets':
+        num_phi_layers = cfg.model.num_phi_layers
+        num_rho_layers = cfg.model.num_rho_layers
+        num_blocks = None
+        num_heads = None
+        pool_mode = cfg.model.get('pool_mode', 'sum')
+    else:  # transformer
+        num_phi_layers = None
+        num_rho_layers = None
+        num_blocks = cfg.model.num_blocks
+        num_heads = cfg.model.num_heads
+        pool_mode = 'sum'
+    
+    # Extract symmetry parameters
+    symmetry_enabled = cfg.get('symmetry', {}).get('enabled', False)
+    symmetry_layer = cfg.get('symmetry', {}).get('layer_idx', -1) if symmetry_enabled else None
+    
+    return run_training(
+        # Data params
+        num_events=cfg.data.num_events,
+        n_particles=cfg.data.n_particles,
+        batch_size=cfg.data.batch_size,
+        input_scale=cfg.data.input_scale,
+        train_split=cfg.data.train_split,
+        val_split=cfg.data.val_split,
+        test_split=cfg.data.test_split,
+        # Training params
+        num_epochs=cfg.training.num_epochs,
+        learning_rate=cfg.training.learning_rate,
+        warmup_epochs=cfg.training.warmup_epochs,
+        weight_decay=cfg.training.weight_decay,
+        grad_clip=cfg.training.grad_clip,
+        dropout=cfg.training.dropout,
+        early_stopping_patience=cfg.training.get('early_stopping_patience', None),
+        # Model params
+        model_type=cfg.model.type,
+        hidden_channels=cfg.model.hidden_channels,
+        num_phi_layers=num_phi_layers,
+        num_rho_layers=num_rho_layers,
+        pool_mode=pool_mode,
+        num_blocks=num_blocks,
+        num_heads=num_heads,
+        use_mean_pooling=cfg.model.get('use_mean_pooling', True),
+        dropout_prob=cfg.model.get('dropout_prob'),
+        multi_query=cfg.model.get('multi_query', False),
+        increase_hidden_channels=cfg.model.get('increase_hidden_channels', 1),
+        checkpoint_blocks=cfg.model.get('checkpoint_blocks', False),
+        # Symmetry params
+        symmetry_enabled=symmetry_enabled,
+        symmetry_layer=symmetry_layer,
+        lambda_sym_max=cfg.get('symmetry', {}).get('lambda_sym_max', 1.0),
+        std_eta=cfg.get('symmetry', {}).get('std_eta', 0.5),
+        # Other
+        run_seed=cfg.run_seed,
+        headless=cfg.headless,
+    )
 
 
 if __name__ == '__main__':

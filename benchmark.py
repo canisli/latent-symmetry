@@ -3,7 +3,7 @@
 Benchmark script for systematic symmetry loss experiments.
 
 Runs training experiments across different lambda values, layers, learning rates, and seeds
-by calling train.py via subprocess with Hydra overrides.
+by calling run_training() directly.
 
 Usage:
     python benchmark.py --seeds 42
@@ -12,13 +12,13 @@ Usage:
     python benchmark.py --num-phi-layers 4 --num-rho-layers 4 --seeds 42
 """
 
-import subprocess
 import csv
 import argparse
 import os
-import re
 import sys
 import time
+
+from train import run_training
 
 
 def row_exists(csv_filename: str, learning_rate: float, lambda_sym_max: float, symmetry_layer: int) -> bool:
@@ -59,39 +59,6 @@ def row_exists(csv_filename: str, learning_rate: float, lambda_sym_max: float, s
     return False
 
 
-def parse_training_output(stdout: str) -> dict:
-    """
-    Parse training output to extract results.
-    
-    Args:
-        stdout: Standard output from train.py
-        
-    Returns:
-        Dictionary with test_task_loss, test_rel_rmse, test_sym_loss
-    """
-    result = {
-        'test_task_loss': None,
-        'test_rel_rmse': None,
-        'test_sym_loss': None,
-    }
-    
-    for line in stdout.split('\n'):
-        if 'Test task loss:' in line:
-            match = re.search(r'Test task loss:\s+([\d.e+-]+)', line)
-            if match:
-                result['test_task_loss'] = float(match.group(1))
-        elif 'Test relative RMSE:' in line:
-            match = re.search(r'Test relative RMSE:\s+([\d.e+-]+)', line)
-            if match:
-                result['test_rel_rmse'] = float(match.group(1))
-        elif 'Test symmetry loss:' in line:
-            match = re.search(r'Test symmetry loss:\s+([\d.e+-]+)', line)
-            if match:
-                result['test_sym_loss'] = float(match.group(1))
-    
-    return result
-
-
 def run_experiment(
     symmetry_layer: int,
     lambda_sym_max: float,
@@ -102,7 +69,6 @@ def run_experiment(
     run_seed: int,
     csv_filename: str,
     fieldnames: list,
-    python_cmd: str = 'python',
 ):
     """
     Run a single training experiment and save results.
@@ -117,7 +83,6 @@ def run_experiment(
         run_seed: Random seed
         csv_filename: Path to CSV file for results
         fieldnames: CSV column names
-        python_cmd: Python command to use
     
     Returns:
         result_dict: Dictionary with experiment results, or None if skipped
@@ -134,54 +99,42 @@ def run_experiment(
     # Record start time
     start_time = time.time()
     
-    # Build command with Hydra overrides
-    cmd = [
-        python_cmd, 'train.py',
-        'headless=true',
-        f'run_seed={run_seed}',
-        f'training.learning_rate={learning_rate}',
-        f'model.num_phi_layers={num_phi_layers}',
-        f'model.num_rho_layers={num_rho_layers}',
-        f'model.hidden_channels={hidden_channels}',
-    ]
-    
-    if symmetry_layer is not None:
-        cmd.extend([
-            'symmetry.enabled=true',
-            f'symmetry.layer_idx={symmetry_layer}',
-            f'symmetry.lambda_sym_max={lambda_sym_max}',
-        ])
-    else:
-        cmd.append('symmetry.enabled=false')
-    
-    # Run training
+    # Run training directly
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=os.path.dirname(os.path.abspath(__file__)) or '.',
+        result = run_training(
+            # Model params
+            model_type='deepsets',
+            hidden_channels=hidden_channels,
+            num_phi_layers=num_phi_layers,
+            num_rho_layers=num_rho_layers,
+            # Training params
+            learning_rate=learning_rate,
+            # Symmetry params
+            symmetry_enabled=(symmetry_layer is not None),
+            symmetry_layer=symmetry_layer,
+            lambda_sym_max=lambda_sym_max,
+            # Other
+            run_seed=run_seed,
+            headless=True,
         )
         
-        if result.returncode != 0:
-            print(f"\033[31m  -> Error running experiment:\033[0m")
-            print(result.stderr[-500:] if len(result.stderr) > 500 else result.stderr)
-            return None
-        
-        # Parse output
-        parsed = parse_training_output(result.stdout)
+        test_task_loss = result.get('test_task_loss')
+        test_rel_rmse = result.get('test_relative_rmse')
+        test_sym_loss = result.get('test_sym_loss')
         
     except Exception as e:
         print(f"\033[31m  -> Exception: {e}\033[0m")
+        import traceback
+        traceback.print_exc()
         return None
     
     result_dict = {
         'learning_rate': learning_rate,
         'lambda_sym_max': lambda_sym_max,
         'symmetry_layer': symmetry_layer,
-        'test_task_loss': parsed['test_task_loss'],
-        'test_sym_loss': parsed['test_sym_loss'],
-        'test_rel_rmse': parsed['test_rel_rmse'],
+        'test_task_loss': test_task_loss,
+        'test_sym_loss': test_sym_loss,
+        'test_rel_rmse': test_rel_rmse,
     }
     
     # Write result immediately to CSV
@@ -226,7 +179,6 @@ def run_benchmark(
     num_rho_layers: int = 3,
     hidden_channels: int = 128,
     run_seeds: list = None,
-    python_cmd: str = 'python',
 ):
     """
     Run training experiments with different lambda_sym and symmetry_layer values.
@@ -236,7 +188,6 @@ def run_benchmark(
         num_rho_layers: Number of rho layers in DeepSets
         hidden_channels: Hidden channel dimension
         run_seeds: List of seeds to run
-        python_cmd: Python command to use
     """
     if run_seeds is None:
         run_seeds = [42]
@@ -293,14 +244,14 @@ def run_benchmark(
                     run_experiment(
                         symmetry_layer, lambda_sym_max, learning_rate,
                         num_phi_layers, num_rho_layers, hidden_channels,
-                        run_seed, csv_filename, fieldnames, python_cmd
+                        run_seed, csv_filename, fieldnames
                     )
             
             # Run baseline experiment with symmetry_layer=None
             run_experiment(
                 None, 0.0, learning_rate,
                 num_phi_layers, num_rho_layers, hidden_channels,
-                run_seed, csv_filename, fieldnames, python_cmd
+                run_seed, csv_filename, fieldnames
             )
             
             print(f"\nSeed {run_seed}, lr={learning_rate:.0e} complete. Results saved to {csv_filename}")
@@ -373,8 +324,6 @@ if __name__ == '__main__':
                         help='Hidden channel dimension (default: 128)')
     parser.add_argument('--seeds', nargs='+', default=['42'],
                         help='Seeds to run (individual, comma-separated, or ranges like "42-50")')
-    parser.add_argument('--python', type=str, default='python',
-                        help='Python command to use (default: python)')
     
     args = parser.parse_args()
     
@@ -390,6 +339,5 @@ if __name__ == '__main__':
         num_rho_layers=args.num_rho_layers,
         hidden_channels=args.hidden_channels,
         run_seeds=run_seeds,
-        python_cmd=args.python,
     )
 
