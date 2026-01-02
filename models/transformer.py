@@ -340,6 +340,12 @@ class Transformer(nn.Module):
         hidden_channels / num_heads.
     multi_query : bool
         Use multi-query attention instead of multi-head attention.
+    use_mean_pooling : bool
+        If True, apply mean pooling over the sequence dimension before the output linear layer.
+        If False, return per-item outputs.
+    pool_mask : Optional[Tensor]
+        Optional mask for mean pooling. If None and use_mean_pooling=True, will auto-detect
+        padding from zero inputs. Shape: (..., num_items) where True indicates real items.
     """
 
     def __init__(
@@ -353,9 +359,11 @@ class Transformer(nn.Module):
         increase_hidden_channels=1,
         multi_query: bool = False,
         dropout_prob=None,
+        use_mean_pooling: bool = False,
     ) -> None:
         super().__init__()
         self.checkpoint_blocks = checkpoint_blocks
+        self.use_mean_pooling = use_mean_pooling
         self.linear_in = nn.Linear(in_channels, hidden_channels)
         self.blocks = nn.ModuleList(
             [
@@ -372,7 +380,7 @@ class Transformer(nn.Module):
         self.linear_out = nn.Linear(hidden_channels, out_channels)
 
     def forward(
-        self, inputs: torch.Tensor, attention_mask=None, is_causal=False
+        self, inputs: torch.Tensor, attention_mask=None, is_causal=False, pool_mask=None
     ) -> torch.Tensor:
         """Forward pass.
 
@@ -381,13 +389,18 @@ class Transformer(nn.Module):
         inputs : Tensor with shape (..., num_items, num_channels)
             Input data
         attention_mask : None or Tensor or xformers.ops.AttentionBias
-            Optional attention mask
+            Optional attention mask for transformer blocks
         is_causal: bool
+            Whether to use causal masking
+        pool_mask : Optional[Tensor]
+            Optional mask for mean pooling. If None and use_mean_pooling=True, will auto-detect
+            padding from zero inputs. Shape: (..., num_items) where True indicates real items.
 
         Returns
         -------
-        outputs : Tensor with shape (..., num_items, num_channels)
-            Outputs
+        outputs : Tensor
+            If use_mean_pooling=False: shape (..., num_items, out_channels)
+            If use_mean_pooling=True: shape (..., out_channels)
         """
         h = self.linear_in(inputs)
         for block in self.blocks:
@@ -400,6 +413,16 @@ class Transformer(nn.Module):
                 )
             else:
                 h = block(h, attention_mask=attention_mask, is_causal=is_causal)
+        
+
+        if self.use_mean_pooling:
+            if pool_mask is None:
+                pool_mask = torch.any(inputs != 0.0, dim=-1)
+
+            mask = pool_mask.float()
+            valid_counts = mask.sum(dim=-1, keepdim=True).clamp(min=1.0)
+            h = (h * mask.unsqueeze(-1)).sum(dim=-2) / valid_counts
+        
         outputs = self.linear_out(h)
 
         return outputs
