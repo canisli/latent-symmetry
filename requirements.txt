@@ -3,4 +3,5 @@ numpy
 matplotlib
 tqdm
 einops
+hydra-core
 # local energyflow installation

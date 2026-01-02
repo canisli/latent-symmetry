@@ -44,20 +44,23 @@ class DeepSets(nn.Module):
         super().__init__()
         self.pool_mode = pool_mode
         
-        # Build phi network (per-particle encoder)
+        # Build phi network (per-particle encoder) with LayerNorm and GELU
         phi_layers = []
         phi_layers.append(nn.Linear(in_channels, hidden_channels))
-        phi_layers.append(nn.ReLU())
+        phi_layers.append(nn.LayerNorm(hidden_channels))
+        phi_layers.append(nn.GELU())
         for _ in range(num_phi_layers - 1):
             phi_layers.append(nn.Linear(hidden_channels, hidden_channels))
-            phi_layers.append(nn.ReLU())
+            phi_layers.append(nn.LayerNorm(hidden_channels))
+            phi_layers.append(nn.GELU())
         self.phi = nn.Sequential(*phi_layers)
         
-        # Build rho network (post-pooling)
+        # Build rho network (post-pooling) with LayerNorm and GELU
         rho_layers = []
         for _ in range(num_rho_layers - 1):
             rho_layers.append(nn.Linear(hidden_channels, hidden_channels))
-            rho_layers.append(nn.ReLU())
+            rho_layers.append(nn.LayerNorm(hidden_channels))
+            rho_layers.append(nn.GELU())
         rho_layers.append(nn.Linear(hidden_channels, out_channels))
         self.rho = nn.Sequential(*rho_layers)
     

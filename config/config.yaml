@@ -1,0 +1,36 @@
+# @package _global_
+
+# Common training parameters
+defaults:
+  - model: deepsets
+  - _self_
+
+# Data parameters
+data:
+  num_events: 50000
+  n_particles: 128
+  batch_size: 256
+  input_scale: null  # null means auto-estimate
+  input_scale_events: 2000
+  train_split: 0.6
+  val_split: 0.2
+  test_split: 0.2
+  num_workers: 4  # Number of parallel data loading workers
+  pin_memory: true  # Faster GPU transfer
+
+# Training parameters
+training:
+  num_epochs: 100
+  learning_rate: 0.001
+  warmup_epochs: 5
+  weight_decay: 0.0
+  grad_clip: null  # null means disabled
+  dropout: 0.0
+
+# Other parameters
+run_seed: 42
+headless: false
+
+# Output directory
+outputs_dir: ./outputs
+

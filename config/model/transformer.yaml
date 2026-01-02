@@ -1,0 +1,13 @@
+# @package model
+
+# Transformer model configuration
+type: transformer
+num_blocks: 6
+hidden_channels: 256
+num_heads: 8
+use_mean_pooling: true
+multi_query: false
+increase_hidden_channels: 1
+checkpoint_blocks: false
+dropout_prob: null  # null means no dropout (will use training.dropout if > 0)
+

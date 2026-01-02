@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 import hashlib
-import argparse
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 from models import Transformer, DeepSets
 from data.kp_dataset import make_kp_dataloader, estimate_input_scale
@@ -58,7 +59,7 @@ def set_model_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float):
+def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float, num_workers: int = 4, pin_memory: bool = True):
     """Build dataloader with fixed edges_list configuration."""
     edges_list = [[(0, 1), (0, 2), (0, 3)]]
     return make_kp_dataloader(
@@ -67,6 +68,8 @@ def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_sca
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
 
@@ -83,11 +86,14 @@ def _accumulate_regression_stats(sum_sq_error: float, sum_y: float, sum_y_sq: fl
 
 def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
     """Training loop."""
-    task_batch_losses = []
-    sum_sq_error = 0.0
-    sum_y = 0.0
-    sum_y_sq = 0.0
+    # Accumulate on GPU to avoid sync overhead (critical for MPS)
+    total_loss = torch.tensor(0.0, device=device)
+    sum_sq_error = torch.tensor(0.0, device=device)
+    sum_y = torch.tensor(0.0, device=device)
+    sum_y_sq = torch.tensor(0.0, device=device)
     count = 0
+    num_batches = 0
+    
     model.train()
     for xb, yb in loader:
         xb = xb.to(device)  # (batch_size, num_particles, 4)
@@ -97,23 +103,24 @@ def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
         yb = yb.squeeze(1)
 
         optimizer.zero_grad()
-        # Transformer with mean pooling returns (batch_size, num_kps) directly
         pred = model(xb)  # (batch_size, num_kps)
         task_loss = loss_fn(pred, yb)
         
-        # Track losses
-        task_batch_losses.append(task_loss.item())
-        diff = (pred - yb).detach()
-        sum_sq_error += diff.pow(2).sum().item()
-        sum_y += yb.detach().sum().item()
-        sum_y_sq += yb.detach().pow(2).sum().item()
-        count += yb.numel()
+        # Accumulate on GPU (no .item() calls in the loop!)
+        with torch.no_grad():
+            total_loss += task_loss
+            diff = pred - yb
+            sum_sq_error += diff.pow(2).sum()
+            sum_y += yb.sum()
+            sum_y_sq += yb.pow(2).sum()
+            count += yb.numel()
+            num_batches += 1
         
         # Backprop
         task_loss.backward()
         
         # Gradient clipping
-        if grad_clip is not None:
+        if grad_clip is not None and grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         
         optimizer.step()
@@ -122,20 +129,26 @@ def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
         if scheduler is not None:
             scheduler.step()
     
-    avg_task_loss = sum(task_batch_losses) / len(task_batch_losses)
-    _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
+    # Only sync with CPU at end of epoch
+    avg_task_loss = (total_loss / num_batches).item()
+    _, rel_rmse = _accumulate_regression_stats(
+        sum_sq_error.item(), sum_y.item(), sum_y_sq.item(), count
+    )
     
-    return avg_task_loss, task_batch_losses, rel_rmse
+    return avg_task_loss, [], rel_rmse  # Empty list for batch losses (not tracked anymore)
 
 def evaluate(model, loss_fn, loader):
     """Evaluation loop."""
     model.eval()
+    # Accumulate on GPU to avoid sync overhead (critical for MPS)
+    total_loss = torch.tensor(0.0, device=device)
+    sum_sq_error = torch.tensor(0.0, device=device)
+    sum_y = torch.tensor(0.0, device=device)
+    sum_y_sq = torch.tensor(0.0, device=device)
+    count = 0
+    num_batches = 0
+    
     with torch.no_grad():
-        task_loss = 0
-        sum_sq_error = 0.0
-        sum_y = 0.0
-        sum_y_sq = 0.0
-        count = 0
         for xb, yb in loader:
             xb = xb.to(device)  # (batch_size, num_particles, 4)
             yb = yb.to(device)  # (batch_size, 1, num_kps)
@@ -144,44 +157,68 @@ def evaluate(model, loss_fn, loader):
             yb = yb.squeeze(1)
 
             pred = model(xb)  # (batch_size, num_kps)
-            task_loss += loss_fn(pred, yb).item()
+            total_loss += loss_fn(pred, yb)
             diff = pred - yb
-            sum_sq_error += diff.pow(2).sum().item()
-            sum_y += yb.sum().item()
-            sum_y_sq += yb.pow(2).sum().item()
+            sum_sq_error += diff.pow(2).sum()
+            sum_y += yb.sum()
+            sum_y_sq += yb.pow(2).sum()
             count += yb.numel()
-        task_loss /= len(loader)
-        _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
-        return task_loss, rel_rmse
+            num_batches += 1
+    
+    # Only sync with CPU at end
+    task_loss = (total_loss / num_batches).item()
+    _, rel_rmse = _accumulate_regression_stats(
+        sum_sq_error.item(), sum_y.item(), sum_y_sq.item(), count
+    )
+    return task_loss, rel_rmse
 
-def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128, 
-         num_heads=4, num_events=10_000, n_particles=128, batch_size=256, 
-         num_epochs=10, run_seed=42, input_scale=None, input_scale_events=2000,
-         model_type='deepsets', warmup_epochs=5, weight_decay=0.01, grad_clip=1.0,
-         dropout=0.0):
+@hydra.main(version_base=None, config_path="config", config_name="config")
+def main(cfg: DictConfig):
     """
-    Main training function.
+    Main training function using Hydra configuration.
     
     Args:
-        headless: If True, skip plotting
-        learning_rate: Learning rate for optimizer
-        num_blocks: Number of transformer blocks
-        hidden_channels: Size of hidden channels
-        num_heads: Number of attention heads
-        num_events: Number of training events
-        n_particles: Max particles per event
-        batch_size: Batch size
-        num_epochs: Number of training epochs
-        run_seed: Base random seed for reproducibility
-        model_type: 'deepsets' or 'transformer'
-        warmup_epochs: Number of warmup epochs for LR scheduler
-        weight_decay: Weight decay for AdamW
-        grad_clip: Gradient clipping max norm
-        dropout: Dropout probability
+        cfg: Hydra configuration object
     
     Returns:
         Dictionary with training results
     """
+    # Print configuration
+    print('\n' + '='*60)
+    print('CONFIGURATION')
+    print('='*60)
+    print(OmegaConf.to_yaml(cfg))
+    print('='*60 + '\n')
+    
+    # Extract config values
+    headless = cfg.headless
+    learning_rate = cfg.training.learning_rate
+    hidden_channels = cfg.model.hidden_channels
+    num_events = cfg.data.num_events
+    n_particles = cfg.data.n_particles
+    batch_size = cfg.data.batch_size
+    num_epochs = cfg.training.num_epochs
+    run_seed = cfg.run_seed
+    input_scale = cfg.data.input_scale
+    input_scale_events = cfg.data.input_scale_events
+    model_type = cfg.model.type
+    warmup_epochs = cfg.training.warmup_epochs
+    weight_decay = cfg.training.weight_decay
+    grad_clip = cfg.training.grad_clip
+    dropout = cfg.training.dropout
+    
+    # Model-specific parameters
+    if model_type == 'deepsets':
+        num_phi_layers = cfg.model.num_phi_layers
+        num_rho_layers = cfg.model.num_rho_layers
+        num_blocks = None  # Not used for DeepSets
+        num_heads = None  # Not used for DeepSets
+    else:  # transformer
+        num_blocks = cfg.model.num_blocks
+        num_heads = cfg.model.num_heads
+        num_phi_layers = None  # Not used for Transformer
+        num_rho_layers = None  # Not used for Transformer
+    
     # Derive seeds for different randomness sources
     data_seed = derive_seed(run_seed, "data")
     model_seed = derive_seed(run_seed, "model")
@@ -204,23 +241,32 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
         np.random.seed(data_seed)
         random.seed(data_seed)
     # Build dataloaders
+    num_workers = cfg.data.get('num_workers', 4)
+    pin_memory = cfg.data.get('pin_memory', True)
+    
     train_loader = build_dataloader(
-        n_events=int(num_events * 0.6),
+        n_events=int(num_events * cfg.data.train_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     val_loader = build_dataloader(
-        n_events=int(num_events * 0.2),
+        n_events=int(num_events * cfg.data.val_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     test_loader = build_dataloader(
-        n_events=int(num_events * 0.2),
+        n_events=int(num_events * cfg.data.test_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     
     # Create model
@@ -233,19 +279,25 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
             in_channels=4,
             out_channels=num_kps,
             hidden_channels=hidden_channels,
-            num_phi_layers=num_blocks,
-            num_rho_layers=num_blocks,
-            pool_mode='sum',
+            num_phi_layers=num_phi_layers,
+            num_rho_layers=num_rho_layers,
+            pool_mode=cfg.model.get('pool_mode', 'sum'),
         ).to(device)
     elif model_type == 'transformer':
+        dropout_prob = dropout if dropout > 0 else None
+        if dropout_prob is None:
+            dropout_prob = cfg.model.get('dropout_prob')
         model = Transformer(
             in_channels=4,
             out_channels=num_kps,
             hidden_channels=hidden_channels,
             num_blocks=num_blocks,
             num_heads=num_heads,
-            use_mean_pooling=True,
-            dropout_prob=dropout if dropout > 0 else None,
+            use_mean_pooling=cfg.model.get('use_mean_pooling', True),
+            dropout_prob=dropout_prob,
+            multi_query=cfg.model.get('multi_query', False),
+            increase_hidden_channels=cfg.model.get('increase_hidden_channels', 1),
+            checkpoint_blocks=cfg.model.get('checkpoint_blocks', False),
         ).to(device)
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
@@ -303,9 +355,9 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
     print('\n' + '='*25)
     print('DATA')
     print('='*25)
-    print(f'Number of training events: {int(num_events * 0.6)}')
-    print(f'Number of validation events: {int(num_events * 0.2)}')
-    print(f'Number of test events: {int(num_events * 0.2)}')
+    print(f'Number of training events: {int(num_events * cfg.data.train_split)}')
+    print(f'Number of validation events: {int(num_events * cfg.data.val_split)}')
+    print(f'Number of test events: {int(num_events * cfg.data.test_split)}')
     print(f'Max particles per event: {n_particles}')
     print(f'Number of epochs: {len(train_task_losses)}')
     print(f'Kinematic polynomial: edges_list = [[(0, 1), (0, 2), (0, 3)]]')
@@ -317,10 +369,13 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
     print('='*25)
     print(f'Model:             {model_type.capitalize()}')
     print(f'Learning rate:     {learning_rate:.2e}')
-    print(f'Num layers:        {num_blocks}')
-    print(f'Hidden channels:   {hidden_channels}')
-    if model_type == 'transformer':
+    if model_type == 'deepsets':
+        print(f'Num phi layers:    {num_phi_layers}')
+        print(f'Num rho layers:    {num_rho_layers}')
+    else:  # transformer
+        print(f'Num blocks:        {num_blocks}')
         print(f'Num heads:         {num_heads}')
+    print(f'Hidden channels:   {hidden_channels}')
     print(f'Batch size:        {batch_size}')
     print(f'Weight decay:      {weight_decay}')
     print(f'Warmup epochs:     {warmup_epochs}')
@@ -362,75 +417,23 @@ def main(headless=False, learning_rate=3e-4, num_blocks=4, hidden_channels=128,
         plt.show()
     
     # Return results dictionary
-    return {
+    result = {
         'model_type': model_type,
         'learning_rate': learning_rate,
-        'num_blocks': num_blocks,
         'hidden_channels': hidden_channels,
-        'num_heads': num_heads,
         'test_task_loss': test_task_loss,
         'test_relative_rmse': test_rel_rmse,
         'best_val_relative_rmse': best_val_rmse,
     }
+    if model_type == 'deepsets':
+        result['num_phi_layers'] = num_phi_layers
+        result['num_rho_layers'] = num_rho_layers
+    else:  # transformer
+        result['num_blocks'] = num_blocks
+        result['num_heads'] = num_heads
+    return result
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train model for kinematic polynomial prediction')
-    parser.add_argument('--num-particles', type=int, default=128,
-                        help='Max particles per event (default: 128)')
-    parser.add_argument('--num-events', type=int, default=50_000,
-                        help='Number of training events (default: 50_000)')
-    parser.add_argument('--num-blocks', type=int, default=6,
-                        help='Number of transformer blocks (default: 6)')
-    parser.add_argument('--hidden-channels', type=int, default=256,
-                        help='Hidden dimension (default: 256)')
-    parser.add_argument('--num-heads', type=int, default=8,
-                        help='Number of attention heads (default: 8)')
-    parser.add_argument('--learning-rate', type=float, default=1e-3,
-                        help='Learning rate for optimizer (default: 1e-3)')
-    parser.add_argument('--batch-size', type=int, default=256,
-                        help='Batch size (default: 256)')
-    parser.add_argument('--num-epochs', type=int, default=100,
-                        help='Number of training epochs (default: 100)')
-    parser.add_argument('--run-seed', type=int, default=42,
-                        help='Base random seed for reproducibility (default: 42)')
-    parser.add_argument('--headless', action='store_true',
-                        help='Run in headless mode (skip plotting and visualization)')
-    parser.add_argument('--input-scale', type=float, default=None,
-                        help='Optional global scale to divide inputs by (default: auto-estimate)')
-    parser.add_argument('--input-scale-events', type=int, default=2000,
-                        help='Number of events to sample when auto-estimating input scale')
-    parser.add_argument('--model-type', type=str, default='transformer',
-                        choices=['deepsets', 'transformer'],
-                        help='Model architecture (default: transformer)')
-    parser.add_argument('--warmup-epochs', type=int, default=5,
-                        help='Number of warmup epochs for LR scheduler (default: 5)')
-    parser.add_argument('--weight-decay', type=float, default=0.01,
-                        help='Weight decay for AdamW (default: 0.01)')
-    parser.add_argument('--grad-clip', type=float, default=1.0,
-                        help='Gradient clipping max norm (default: 1.0)')
-    parser.add_argument('--dropout', type=float, default=0.0,
-                        help='Dropout probability (default: 0.0)')
-    
-    args = parser.parse_args()
-    
-    main(
-        headless=args.headless,
-        learning_rate=args.learning_rate,
-        num_blocks=args.num_blocks,
-        hidden_channels=args.hidden_channels,
-        num_heads=args.num_heads,
-        num_events=args.num_events,
-        n_particles=args.num_particles,
-        batch_size=args.batch_size,
-        num_epochs=args.num_epochs,
-        run_seed=args.run_seed,
-        input_scale=args.input_scale,
-        input_scale_events=args.input_scale_events,
-        model_type=args.model_type,
-        warmup_epochs=args.warmup_epochs,
-        weight_decay=args.weight_decay,
-        grad_clip=args.grad_clip,
-        dropout=args.dropout,
-    )
+    main()
 
