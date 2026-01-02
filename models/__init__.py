@@ -7,6 +7,7 @@ from .transformer import (
     BaselineTransformerBlock,
     Transformer,
 )
+from .deepsets import DeepSets
 
 __all__ = [
     "MLP",
@@ -16,5 +17,6 @@ __all__ = [
     "BaselineSelfAttention",
     "BaselineTransformerBlock",
     "Transformer",
+    "DeepSets",
 ]
 
