@@ -121,6 +121,9 @@ def run_experiment(
         test_task_loss = result.get('test_task_loss')
         test_rel_rmse = result.get('test_relative_rmse')
         test_sym_loss = result.get('test_sym_loss')
+        epochs_trained = result.get('epochs_trained')
+        num_epochs = result.get('num_epochs')
+        early_stopped = result.get('early_stopped', False)
         
     except Exception as e:
         print(f"\033[31m  -> Exception: {e}\033[0m")
@@ -167,8 +170,15 @@ def run_experiment(
     sym_loss_str = f"{result_dict['test_sym_loss']:.4e}" if result_dict['test_sym_loss'] is not None else "N/A"
     task_loss_str = f"{result_dict['test_task_loss']:.4e}" if result_dict['test_task_loss'] is not None else "N/A"
     rel_rmse_str = f"{result_dict['test_rel_rmse']:.4f}" if result_dict['test_rel_rmse'] is not None else "N/A"
+    
+    # Format epochs info
+    if early_stopped:
+        epochs_str = f"early stopped @ {epochs_trained}/{num_epochs}"
+    else:
+        epochs_str = f"completed {epochs_trained}/{num_epochs}"
+    
     print(f"\033[32m  -> Task loss: {task_loss_str}, Sym loss: {sym_loss_str}, Rel RMSE: {rel_rmse_str}\033[0m")
-    print(f"\033[32m  -> Time: {duration_str}\033[0m")
+    print(f"\033[32m  -> Epochs: {epochs_str}, Time: {duration_str}\033[0m")
     print(f"\033[32m  -> Saved to {csv_filename}\033[0m\n")
     
     return result_dict

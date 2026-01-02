@@ -414,6 +414,11 @@ def run_training(
         # Early stopping check
         if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
             print(f"\nEarly stopping at epoch {epoch + 1} (no improvement for {early_stopping_patience} epochs)")
+            break
+    
+    # Track how many epochs actually ran
+    epochs_trained = len(train_task_losses)
+    early_stopped = epochs_trained < num_epochs
     
     # Load best model for final evaluation
     if best_model_state is not None:
@@ -504,6 +509,9 @@ def run_training(
         'test_task_loss': test_task_loss,
         'test_relative_rmse': test_rel_rmse,
         'best_val_relative_rmse': best_val_rmse,
+        'epochs_trained': epochs_trained,
+        'num_epochs': num_epochs,
+        'early_stopped': early_stopped,
     }
     if model_type == 'deepsets':
         result['num_phi_layers'] = num_phi_layers
