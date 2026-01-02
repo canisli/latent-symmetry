@@ -23,7 +23,7 @@ training:
   weight_decay: 0.0
   grad_clip: null  # null means disabled
   dropout: 0.0
-  early_stopping_patience: 5  # epochs without val_task_loss improvement before stopping (null to disable)
+  early_stopping_patience: 10  # based on val_task_loss (null to disable)
 
 # Symmetry loss parameters
 symmetry:
