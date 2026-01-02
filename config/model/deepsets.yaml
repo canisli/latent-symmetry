@@ -2,8 +2,8 @@
 
 # DeepSets model configuration
 type: deepsets
-num_phi_layers: 6
-num_rho_layers: 6
-hidden_channels: 256
+num_phi_layers: 3
+num_rho_layers: 3
+hidden_channels: 128
 pool_mode: sum  # sum or mean
 

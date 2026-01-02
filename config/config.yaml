@@ -7,16 +7,13 @@ defaults:
 
 # Data parameters
 data:
-  num_events: 50000
+  num_events: 10000
   n_particles: 128
   batch_size: 256
-  input_scale: null  # null means auto-estimate
-  input_scale_events: 2000
+  input_scale: 9.515689e-01  # Computed with n_events=2000, n_particles=128, seed=42 (run compute_input_scale.py to recompute)
   train_split: 0.6
   val_split: 0.2
   test_split: 0.2
-  num_workers: 4  # Number of parallel data loading workers
-  pin_memory: true  # Faster GPU transfer
 
 # Training parameters
 training:
@@ -26,6 +23,14 @@ training:
   weight_decay: 0.0
   grad_clip: null  # null means disabled
   dropout: 0.0
+  early_stopping_patience: 5  # epochs without val_task_loss improvement before stopping (null to disable)
+
+# Symmetry loss parameters
+symmetry:
+  enabled: false
+  layer_idx: -1  # -1 for output, or specific layer index (see model docstrings)
+  lambda_sym_max: 1.0
+  std_eta: 0.5  # rapidity standard deviation for boosts (max γ ~ 2.4 at 3σ)
 
 # Other parameters
 run_seed: 42

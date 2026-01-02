@@ -346,6 +346,12 @@ class Transformer(nn.Module):
     pool_mask : Optional[Tensor]
         Optional mask for mean pooling. If None and use_mean_pooling=True, will auto-detect
         padding from zero inputs. Shape: (..., num_items) where True indicates real items.
+    
+    Layer Indexing for forward_with_intermediate (with num_blocks=4):
+        - layer_idx 0: after linear_in (per-particle)
+        - layer_idx 1-4: after each transformer block (per-particle)
+        - layer_idx 5: post-pooling (only if use_mean_pooling=True)
+        - layer_idx -1: final output
     """
 
     def __init__(
@@ -364,6 +370,7 @@ class Transformer(nn.Module):
         super().__init__()
         self.checkpoint_blocks = checkpoint_blocks
         self.use_mean_pooling = use_mean_pooling
+        self.num_blocks = num_blocks
         self.linear_in = nn.Linear(in_channels, hidden_channels)
         self.blocks = nn.ModuleList(
             [
@@ -426,3 +433,91 @@ class Transformer(nn.Module):
         outputs = self.linear_out(h)
 
         return outputs
+
+    def _apply_pooling(
+        self, h: torch.Tensor, inputs: torch.Tensor, pool_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Apply mean pooling to hidden states."""
+        if pool_mask is None:
+            pool_mask = torch.any(inputs != 0.0, dim=-1)
+        mask = pool_mask.float()
+        valid_counts = mask.sum(dim=-1, keepdim=True).clamp(min=1.0)
+        return (h * mask.unsqueeze(-1)).sum(dim=-2) / valid_counts
+
+    def forward_with_intermediate(
+        self,
+        inputs: torch.Tensor,
+        layer_idx: int,
+        attention_mask=None,
+        is_causal: bool = False,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass returning intermediate activations at specified layer.
+        
+        Parameters
+        ----------
+        inputs : Tensor
+            Input data with shape (..., num_items, in_channels)
+        layer_idx : int
+            Layer index to return activations from:
+            - 0: after linear_in (per-particle)
+            - 1..num_blocks: after each transformer block (per-particle)
+            - num_blocks + 1: post-pooling (only if use_mean_pooling=True)
+            - -1: final output
+        attention_mask : None or Tensor
+            Optional attention mask
+        is_causal : bool
+            Whether to use causal masking
+        mask : Optional[Tensor]
+            Optional mask for pooling, aliased as pool_mask
+        
+        Returns
+        -------
+        activations : Tensor
+            Intermediate activations at the specified layer
+        """
+        pool_mask = mask  # Alias for consistency with symmetry loss interface
+        
+        if layer_idx == -1:
+            return self.forward(inputs, attention_mask, is_causal, pool_mask)
+        
+        pool_layer_idx = self.num_blocks + 1
+        
+        if layer_idx < 0 or layer_idx > pool_layer_idx:
+            raise ValueError(
+                f"layer_idx must be between 0 and {pool_layer_idx}, or -1. "
+                f"Got {layer_idx}"
+            )
+        
+        if layer_idx == pool_layer_idx and not self.use_mean_pooling:
+            raise ValueError(
+                f"layer_idx={pool_layer_idx} (post-pooling) is only valid when "
+                f"use_mean_pooling=True"
+            )
+        
+        # After linear_in
+        h = self.linear_in(inputs)
+        if layer_idx == 0:
+            return h
+        
+        # Through transformer blocks
+        for i, block in enumerate(self.blocks, start=1):
+            if self.checkpoint_blocks:
+                h = checkpoint(
+                    block,
+                    inputs=h,
+                    attention_mask=attention_mask,
+                    is_causal=is_causal,
+                )
+            else:
+                h = block(h, attention_mask=attention_mask, is_causal=is_causal)
+            
+            if i == layer_idx:
+                return h
+        
+        # Post-pooling (only reachable if use_mean_pooling=True)
+        if layer_idx == pool_layer_idx:
+            return self._apply_pooling(h, inputs, pool_mask)
+        
+        # Should not reach here
+        raise RuntimeError(f"Failed to return activations for layer_idx={layer_idx}")

@@ -10,7 +10,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from models import Transformer, DeepSets
-from data.kp_dataset import make_kp_dataloader, estimate_input_scale
+from data.kp_dataset import make_kp_dataloader
+from symmetry import lorentz_orbit_variance_loss
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -59,7 +60,7 @@ def set_model_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float, num_workers: int = 4, pin_memory: bool = True):
+def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float):
     """Build dataloader with fixed edges_list configuration."""
     edges_list = [[(0, 1), (0, 2), (0, 3)]]
     return make_kp_dataloader(
@@ -68,8 +69,6 @@ def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_sca
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
     )
 
 
@@ -84,15 +83,41 @@ def _accumulate_regression_stats(sum_sq_error: float, sum_y: float, sum_y_sq: fl
     return mse, rel_rmse
 
 
-def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
-    """Training loop."""
-    # Accumulate on GPU to avoid sync overhead (critical for MPS)
-    total_loss = torch.tensor(0.0, device=device)
-    sum_sq_error = torch.tensor(0.0, device=device)
-    sum_y = torch.tensor(0.0, device=device)
-    sum_y_sq = torch.tensor(0.0, device=device)
+def train(
+    model,
+    loss_fn,
+    loader,
+    optimizer,
+    scheduler=None,
+    grad_clip=None,
+    symmetry_layer=None,
+    lambda_sym=0.0,
+    std_eta=0.5,
+    augmentation_generator=None,
+):
+    """Training loop with optional symmetry loss.
+    
+    Args:
+        model: The model to train
+        loss_fn: Task loss function
+        loader: DataLoader for training data
+        optimizer: Optimizer
+        scheduler: Optional learning rate scheduler
+        grad_clip: Optional gradient clipping value
+        symmetry_layer: Layer index for symmetry loss (None to disable)
+        lambda_sym: Weight for symmetry loss
+        std_eta: Rapidity std for Lorentz augmentations
+        augmentation_generator: Optional random generator for reproducibility
+    
+    Returns:
+        Tuple of (avg_task_loss, task_batch_losses, rel_rmse, avg_sym_loss, sym_batch_losses)
+    """
+    task_batch_losses = []
+    sym_batch_losses = []
+    sum_sq_error = 0.0
+    sum_y = 0.0
+    sum_y_sq = 0.0
     count = 0
-    num_batches = 0
     
     model.train()
     for xb, yb in loader:
@@ -106,18 +131,27 @@ def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
         pred = model(xb)  # (batch_size, num_kps)
         task_loss = loss_fn(pred, yb)
         
-        # Accumulate on GPU (no .item() calls in the loop!)
-        with torch.no_grad():
-            total_loss += task_loss
-            diff = pred - yb
-            sum_sq_error += diff.pow(2).sum()
-            sum_y += yb.sum()
-            sum_y_sq += yb.pow(2).sum()
-            count += yb.numel()
-            num_batches += 1
+        # Compute symmetry loss if enabled
+        sym_loss = torch.tensor(0.0, device=device)
+        if symmetry_layer is not None and lambda_sym > 0:
+            sym_loss = lorentz_orbit_variance_loss(
+                model, xb, symmetry_layer,
+                std_eta=std_eta,
+                generator=augmentation_generator,
+            )
         
-        # Backprop
-        task_loss.backward()
+        # Track losses separately
+        task_batch_losses.append(task_loss.item())
+        sym_batch_losses.append(sym_loss.item())
+        diff = (pred - yb).detach()
+        sum_sq_error += diff.pow(2).sum().item()
+        sum_y += yb.detach().sum().item()
+        sum_y_sq += yb.detach().pow(2).sum().item()
+        count += yb.numel()
+        
+        # Total loss for backprop
+        total_loss = task_loss + lambda_sym * sym_loss
+        total_loss.backward()
         
         # Gradient clipping
         if grad_clip is not None and grad_clip > 0:
@@ -129,26 +163,41 @@ def train(model, loss_fn, loader, optimizer, scheduler=None, grad_clip=None):
         if scheduler is not None:
             scheduler.step()
     
-    # Only sync with CPU at end of epoch
-    avg_task_loss = (total_loss / num_batches).item()
-    _, rel_rmse = _accumulate_regression_stats(
-        sum_sq_error.item(), sum_y.item(), sum_y_sq.item(), count
-    )
+    avg_task_loss = sum(task_batch_losses) / len(task_batch_losses)
+    avg_sym_loss = sum(sym_batch_losses) / len(sym_batch_losses) if sym_batch_losses else 0.0
+    _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
     
-    return avg_task_loss, [], rel_rmse  # Empty list for batch losses (not tracked anymore)
+    return avg_task_loss, task_batch_losses, rel_rmse, avg_sym_loss, sym_batch_losses
 
-def evaluate(model, loss_fn, loader):
-    """Evaluation loop."""
-    model.eval()
-    # Accumulate on GPU to avoid sync overhead (critical for MPS)
-    total_loss = torch.tensor(0.0, device=device)
-    sum_sq_error = torch.tensor(0.0, device=device)
-    sum_y = torch.tensor(0.0, device=device)
-    sum_y_sq = torch.tensor(0.0, device=device)
-    count = 0
-    num_batches = 0
+def evaluate(
+    model,
+    loss_fn,
+    loader,
+    symmetry_layer=None,
+    std_eta=0.5,
+    augmentation_generator=None,
+):
+    """Evaluation loop with optional symmetry loss measurement.
     
+    Args:
+        model: The model to evaluate
+        loss_fn: Task loss function
+        loader: DataLoader for evaluation data
+        symmetry_layer: Layer index for symmetry loss (None to disable)
+        std_eta: Rapidity std for Lorentz augmentations
+        augmentation_generator: Optional random generator for reproducibility
+    
+    Returns:
+        Tuple of (task_loss, rel_rmse, sym_loss)
+    """
+    model.eval()
     with torch.no_grad():
+        task_loss = 0
+        sym_loss = 0
+        sum_sq_error = 0.0
+        sum_y = 0.0
+        sum_y_sq = 0.0
+        count = 0
         for xb, yb in loader:
             xb = xb.to(device)  # (batch_size, num_particles, 4)
             yb = yb.to(device)  # (batch_size, 1, num_kps)
@@ -157,20 +206,26 @@ def evaluate(model, loss_fn, loader):
             yb = yb.squeeze(1)
 
             pred = model(xb)  # (batch_size, num_kps)
-            total_loss += loss_fn(pred, yb)
+            task_loss += loss_fn(pred, yb).item()
+            
+            if symmetry_layer is not None:
+                sym_loss += lorentz_orbit_variance_loss(
+                    model, xb, symmetry_layer,
+                    std_eta=std_eta,
+                    generator=augmentation_generator,
+                ).item()
+            
             diff = pred - yb
-            sum_sq_error += diff.pow(2).sum()
-            sum_y += yb.sum()
-            sum_y_sq += yb.pow(2).sum()
+            sum_sq_error += diff.pow(2).sum().item()
+            sum_y += yb.sum().item()
+            sum_y_sq += yb.pow(2).sum().item()
             count += yb.numel()
-            num_batches += 1
-    
-    # Only sync with CPU at end
-    task_loss = (total_loss / num_batches).item()
-    _, rel_rmse = _accumulate_regression_stats(
-        sum_sq_error.item(), sum_y.item(), sum_y_sq.item(), count
-    )
-    return task_loss, rel_rmse
+        
+        task_loss /= len(loader)
+        if symmetry_layer is not None:
+            sym_loss /= len(loader)
+        _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
+        return task_loss, rel_rmse, sym_loss
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig):
@@ -200,7 +255,6 @@ def main(cfg: DictConfig):
     num_epochs = cfg.training.num_epochs
     run_seed = cfg.run_seed
     input_scale = cfg.data.input_scale
-    input_scale_events = cfg.data.input_scale_events
     model_type = cfg.model.type
     warmup_epochs = cfg.training.warmup_epochs
     weight_decay = cfg.training.weight_decay
@@ -219,9 +273,16 @@ def main(cfg: DictConfig):
         num_phi_layers = None  # Not used for Transformer
         num_rho_layers = None  # Not used for Transformer
     
+    # Symmetry loss parameters
+    symmetry_enabled = cfg.get('symmetry', {}).get('enabled', False)
+    symmetry_layer = cfg.get('symmetry', {}).get('layer_idx', -1) if symmetry_enabled else None
+    lambda_sym_max = cfg.get('symmetry', {}).get('lambda_sym_max', 1.0)
+    std_eta = cfg.get('symmetry', {}).get('std_eta', 0.5)
+    
     # Derive seeds for different randomness sources
     data_seed = derive_seed(run_seed, "data")
     model_seed = derive_seed(run_seed, "model")
+    augmentation_seed = derive_seed(run_seed, "augmentation")
     
     # Set model seed before model creation
     set_model_seed(model_seed)
@@ -230,43 +291,24 @@ def main(cfg: DictConfig):
     np.random.seed(data_seed)
     random.seed(data_seed)
     
-    # Estimate global input scale once, reuse across splits
-    if input_scale is None:
-        input_scale = estimate_input_scale(
-            n_events=input_scale_events,
-            n_particles=n_particles,
-            seed=data_seed,
-        )
-        # Reseed to keep dataset generation deterministic
-        np.random.seed(data_seed)
-        random.seed(data_seed)
-    # Build dataloaders
-    num_workers = cfg.data.get('num_workers', 4)
-    pin_memory = cfg.data.get('pin_memory', True)
-    
+    # Build dataloaders 
     train_loader = build_dataloader(
         n_events=int(num_events * cfg.data.train_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
     )
     val_loader = build_dataloader(
         n_events=int(num_events * cfg.data.val_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
     )
     test_loader = build_dataloader(
         n_events=int(num_events * cfg.data.test_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
     )
     
     # Create model
@@ -305,6 +347,9 @@ def main(cfg: DictConfig):
     loss_fn = torch.nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
+    # Create augmentation generator for symmetry loss
+    augmentation_generator = torch.Generator(device=device).manual_seed(augmentation_seed)
+    
     # Calculate total training steps for scheduler
     steps_per_epoch = len(train_loader)
     total_steps = num_epochs * steps_per_epoch
@@ -312,44 +357,85 @@ def main(cfg: DictConfig):
     
     scheduler = get_cosine_schedule_with_warmup(optimizer, warmup_steps, total_steps)
     
+    # Early stopping configuration
+    early_stopping_patience = cfg.training.get('early_stopping_patience', None)
+    
     # Training loop
     pbar = tqdm(range(num_epochs))
     train_task_losses = []
     val_task_losses = []
     train_task_batch_losses = []
+    train_sym_batch_losses = []
     train_rel_rmses = []
     val_rel_rmses = []
+    train_sym_losses = []
+    val_sym_losses = []
+    best_val_loss = float('inf')
     best_val_rmse = float('inf')
     best_model_state = None
+    epochs_without_improvement = 0
+    
+    # Constant lambda for symmetry loss
+    lambda_sym = lambda_sym_max if symmetry_enabled else 0.0
     
     for epoch in pbar:
-        train_task_loss, task_batch_losses, train_rel_rmse = train(
-            model, loss_fn, train_loader, optimizer, scheduler, grad_clip
+        train_task_loss, task_batch_losses, train_rel_rmse, train_sym_loss, sym_batch_losses = train(
+            model, loss_fn, train_loader, optimizer, scheduler, grad_clip,
+            symmetry_layer=symmetry_layer,
+            lambda_sym=lambda_sym,
+            std_eta=std_eta,
+            augmentation_generator=augmentation_generator,
         )
-        val_task_loss, val_rel_rmse = evaluate(model, loss_fn, val_loader)
+        val_task_loss, val_rel_rmse, val_sym_loss = evaluate(
+            model, loss_fn, val_loader,
+            symmetry_layer=symmetry_layer,
+            std_eta=std_eta,
+            augmentation_generator=augmentation_generator,
+        )
         
         train_task_losses.append(train_task_loss)
         val_task_losses.append(val_task_loss)
         train_task_batch_losses.extend(task_batch_losses)
+        train_sym_batch_losses.extend(sym_batch_losses)
         train_rel_rmses.append(train_rel_rmse)
         val_rel_rmses.append(val_rel_rmse)
+        train_sym_losses.append(train_sym_loss)
+        val_sym_losses.append(val_sym_loss)
         
-        # Track best model
-        if val_rel_rmse < best_val_rmse:
+        # Track best model (by validation task loss for early stopping)
+        if val_task_loss < best_val_loss:
+            best_val_loss = val_task_loss
             best_val_rmse = val_rel_rmse
             best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
         
-        pbar.set_postfix({
+        postfix = {
             'train_rel_rmse': f'{train_rel_rmse:.3f}',
             'val_rel_rmse': f'{val_rel_rmse:.3f}',
             'best_val': f'{best_val_rmse:.3f}',
-        })
+        }
+        if symmetry_enabled:
+            postfix['sym'] = f'{train_sym_loss:.2e}'
+            postfix['λ'] = f'{lambda_sym:.3f}'
+        pbar.set_postfix(postfix)
+        
+        # Early stopping check
+        if early_stopping_patience is not None and epochs_without_improvement >= early_stopping_patience:
+            print(f"\nEarly stopping at epoch {epoch + 1} (no improvement for {early_stopping_patience} epochs)")
+            break
     
     # Load best model for final evaluation
     if best_model_state is not None:
         model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
     
-    test_task_loss, test_rel_rmse = evaluate(model, loss_fn, test_loader)
+    test_task_loss, test_rel_rmse, test_sym_loss = evaluate(
+        model, loss_fn, test_loader,
+        symmetry_layer=symmetry_layer,
+        std_eta=std_eta,
+        augmentation_generator=augmentation_generator,
+    )
     
     # Print data section
     print('\n' + '='*25)
@@ -381,6 +467,10 @@ def main(cfg: DictConfig):
     print(f'Warmup epochs:     {warmup_epochs}')
     print(f'Grad clip:         {grad_clip}')
     print(f'Input scale:       {input_scale:.3e}')
+    if symmetry_enabled:
+        print(f'Symmetry layer:    {symmetry_layer}')
+        print(f'Lambda sym max:    {lambda_sym_max}')
+        print(f'Std eta:           {std_eta}')
     print('='*25)
     
     # Print results section
@@ -389,6 +479,8 @@ def main(cfg: DictConfig):
     print('='*25)
     print(f'Test task loss:     {test_task_loss:.4e}')
     print(f'Test relative RMSE: {test_rel_rmse:.4f}')
+    if symmetry_enabled:
+        print(f'Test symmetry loss: {test_sym_loss:.4e}')
     print('='*25)
     
     # Only plot if not in headless mode
@@ -431,6 +523,11 @@ def main(cfg: DictConfig):
     else:  # transformer
         result['num_blocks'] = num_blocks
         result['num_heads'] = num_heads
+    if symmetry_enabled:
+        result['symmetry_layer'] = symmetry_layer
+        result['lambda_sym_max'] = lambda_sym_max
+        result['std_eta'] = std_eta
+        result['test_sym_loss'] = test_sym_loss
     return result
 
 
