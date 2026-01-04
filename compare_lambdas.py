@@ -370,7 +370,6 @@ def plot_all_layers(csv_files: list, layers_to_plot: set = None):
     
     fig.suptitle(" | ".join(suptitle_parts), fontsize=12)
     
-    plt.tight_layout()
     plt.show()
 
 

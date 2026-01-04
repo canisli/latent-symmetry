@@ -67,16 +67,23 @@ def lorentz_orbit_variance_loss(
     h2 = model.forward_with_intermediate(x_rot2, layer_idx, mask=mask)
     
     # Handle per-particle representations (pre-pooling layers)
-    # These have shape (B, N, hidden) and need to be pooled
+    # These have shape (B, N, hidden) - compare particle-by-particle without pooling
     if h1.dim() == 3:
-        # Apply masked mean pooling
         if mask is None:
             mask = torch.any(x != 0.0, dim=-1)  # (B, N)
-        mask_float = mask.float().unsqueeze(-1)  # (B, N, 1)
-        valid_counts = mask_float.sum(dim=1).clamp(min=1.0)  # (B, 1)
-        h1 = (h1 * mask_float).sum(dim=1) / valid_counts  # (B, hidden)
-        h2 = (h2 * mask_float).sum(dim=1) / valid_counts  # (B, hidden)
+        
+        # Compute per-particle squared differences: (B, N, hidden) -> (B, N)
+        diff = h1 - h2
+        per_particle_loss = diff.pow(2).sum(dim=-1)  # (B, N)
+        
+        # Average over valid particles across all events
+        mask_float = mask.float()  # (B, N)
+        total_valid = mask_float.sum().clamp(min=1.0)
+        loss = 0.5 * (per_particle_loss * mask_float).sum() / total_valid
+        
+        return loss
     
+    # Post-pooling layers: h1 and h2 have shape (B, hidden)
     # Compute variance loss: 0.5 * ||h1 - h2||^2
     diff = h1 - h2
     loss = 0.5 * (diff.pow(2).sum(dim=-1)).mean()
