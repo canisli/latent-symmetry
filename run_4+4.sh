@@ -22,4 +22,4 @@ export TF_GPU_ALLOCATOR=cuda_malloc_async
 export NUMBA_DISABLE_JIT=1
 export HYDRA_FULL_ERROR=1
 cd ~/latent-symmetry
-python benchmark.py --seeds 1-100 --num-phi-layers 3 --num-rho-layers 3 
+python benchmark.py --seeds 1-100 --num-phi-layers 4 --num-rho-layers 4 
