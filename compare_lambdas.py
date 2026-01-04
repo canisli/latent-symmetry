@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script to plot loss as a function of lambda_sym_max for all symmetry layers.
+Script to plot task rel RMSE and symmetry loss as a function of lambda_sym_max for all symmetry layers.
 Can accept multiple CSV files to plot error bars across seeds.
 
 Usage:
@@ -196,7 +196,7 @@ def compute_stats(values: list) -> tuple:
 
 def plot_all_layers(csv_files: list, layers_to_plot: set = None):
     """
-    Plot task loss and symmetry loss as a function of lambda_sym_max for specified layers.
+    Plot task rel RMSE and symmetry loss as a function of lambda_sym_max for specified layers.
     If multiple CSV files are provided, plots error bars across seeds.
     
     Args:
@@ -260,7 +260,7 @@ def plot_all_layers(csv_files: list, layers_to_plot: set = None):
         for lambda_val in lambda_values:
             key = (layer, lambda_val)
             if key in aggregated:
-                n_samples = len(aggregated[key]['task_loss'])
+                n_samples = len(aggregated[key]['rel_rmse'])
                 status = "✓" if n_samples == len(csv_files) else "⚠"
                 print(f"  {status} lambda={lambda_val:8.3f}: {n_samples}/{len(csv_files)} seeds")
     
@@ -280,8 +280,8 @@ def plot_all_layers(csv_files: list, layers_to_plot: set = None):
     
     for idx, layer in enumerate(sorted_layers):
         lambda_values = np.array(layer_stats[layer]['lambda'])
-        task_means = np.array(layer_stats[layer]['task_mean'])
-        task_cis = np.array(layer_stats[layer]['task_ci'])
+        rmse_means = np.array(layer_stats[layer]['rmse_mean'])
+        rmse_cis = np.array(layer_stats[layer]['rmse_ci'])
         sym_means = np.array(layer_stats[layer]['sym_mean'])
         sym_cis = np.array(layer_stats[layer]['sym_ci'])
         
@@ -289,40 +289,40 @@ def plot_all_layers(csv_files: list, layers_to_plot: set = None):
         
         if layer is None:
             # For Layer None, plot as horizontal line with shaded confidence interval
-            if len(task_means) > 0 and task_means[0] is not None:
-                task_mean = task_means[0]
-                task_ci = task_cis[0] if task_cis[0] is not None else 0
+            if len(rmse_means) > 0 and rmse_means[0] is not None:
+                rmse_mean = rmse_means[0]
+                rmse_ci = rmse_cis[0] if rmse_cis[0] is not None else 0
                 
                 if all_lambdas:
                     x_min = min(all_lambdas)
                     x_max = max(all_lambdas)
                     
-                    ax1.axhline(y=task_mean, color=colors[idx], linestyle='--',
+                    ax1.axhline(y=rmse_mean, color=colors[idx], linestyle='--',
                                linewidth=1.5, label=f'Layer {layer_str}', alpha=0.8)
                     ax1.fill_between([x_min, x_max],
-                                     task_mean - task_ci,
-                                     task_mean + task_ci,
+                                     rmse_mean - rmse_ci,
+                                     rmse_mean + rmse_ci,
                                      color=colors[idx], alpha=0.15)
         else:
             # Sort by lambda for proper line plot
             sort_idx = np.argsort(lambda_values)
             lambda_values = lambda_values[sort_idx]
-            task_means = task_means[sort_idx]
-            task_cis = task_cis[sort_idx]
+            rmse_means = rmse_means[sort_idx]
+            rmse_cis = rmse_cis[sort_idx]
             sym_means = sym_means[sort_idx]
             sym_cis = sym_cis[sort_idx]
             
             # Filter out zero/None lambda for log scale
-            valid_task = (lambda_values > 0) & np.array([t is not None for t in task_means])
+            valid_rmse = (lambda_values > 0) & np.array([r is not None for r in rmse_means])
             valid_sym = (lambda_values > 0) & np.array([s is not None for s in sym_means])
             
-            # Plot task loss
-            if np.any(valid_task):
-                task_means_valid = np.array([t if t is not None else np.nan for t in task_means])
-                task_cis_valid = np.array([c if c is not None else 0 for c in task_cis])
+            # Plot task rel RMSE
+            if np.any(valid_rmse):
+                rmse_means_valid = np.array([r if r is not None else np.nan for r in rmse_means])
+                rmse_cis_valid = np.array([c if c is not None else 0 for c in rmse_cis])
                 ax1.errorbar(
-                    lambda_values[valid_task], task_means_valid[valid_task],
-                    yerr=task_cis_valid[valid_task],
+                    lambda_values[valid_rmse], rmse_means_valid[valid_rmse],
+                    yerr=rmse_cis_valid[valid_rmse],
                     fmt='o-', linewidth=1.5, markersize=4, capsize=3,
                     label=f'Layer {layer_str}', color=colors[idx]
                 )
@@ -338,10 +338,10 @@ def plot_all_layers(csv_files: list, layers_to_plot: set = None):
                     label=f'Layer {layer_str}', color=colors[idx]
                 )
     
-    # Configure task loss plot
+    # Configure task rel RMSE plot
     ax1.set_xlabel('λ_sym_max', fontsize=11)
-    ax1.set_ylabel('Test Task Loss', fontsize=11)
-    ax1.set_title('Task Loss vs Lambda', fontsize=12)
+    ax1.set_ylabel('Test Rel RMSE', fontsize=11)
+    ax1.set_title('Task Rel RMSE vs Lambda', fontsize=12)
     ax1.grid(True, alpha=0.3)
     ax1.set_xscale('log')
     ax1.set_yscale('log')
