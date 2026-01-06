@@ -18,7 +18,8 @@ import os
 import sys
 import time
 
-from train import run_training
+from train import run_training, load_efp_preset
+from pathlib import Path
 
 
 def row_exists(csv_filename: str, learning_rate: float, lambda_sym_max: float, symmetry_layer: int) -> bool:
@@ -69,6 +70,7 @@ def run_experiment(
     run_seed: int,
     csv_filename: str,
     fieldnames: list,
+    edges_list,
 ):
     """
     Run a single training experiment and save results.
@@ -113,6 +115,8 @@ def run_experiment(
             symmetry_enabled=(symmetry_layer is not None),
             symmetry_layer=symmetry_layer,
             lambda_sym_max=lambda_sym_max,
+            # Data params
+            edges_list=edges_list,
             # Other
             run_seed=run_seed,
             headless=True,
@@ -121,6 +125,7 @@ def run_experiment(
         test_task_loss = result.get('test_task_loss')
         test_rel_rmse = result.get('test_relative_rmse')
         test_sym_loss = result.get('test_sym_loss')
+        test_per_kp_rel_rmse = result.get('test_per_kp_rel_rmse', [])
         epochs_trained = result.get('epochs_trained')
         num_epochs = result.get('num_epochs')
         early_stopped = result.get('early_stopped', False)
@@ -131,6 +136,16 @@ def run_experiment(
         traceback.print_exc()
         return None
     
+    # Format per-KP RMSE values for CSV (handle missing values)
+    per_kp_rmse_dict = {}
+    if test_per_kp_rel_rmse and len(test_per_kp_rel_rmse) >= 5:
+        for i in range(5):
+            per_kp_rmse_dict[f'test_per_kp_rel_rmse_kp{i+1}'] = test_per_kp_rel_rmse[i]
+    else:
+        # Fill with empty strings if not available
+        for i in range(5):
+            per_kp_rmse_dict[f'test_per_kp_rel_rmse_kp{i+1}'] = ''
+    
     result_dict = {
         'learning_rate': learning_rate,
         'lambda_sym_max': lambda_sym_max,
@@ -138,19 +153,25 @@ def run_experiment(
         'test_task_loss': test_task_loss,
         'test_sym_loss': test_sym_loss,
         'test_rel_rmse': test_rel_rmse,
+        **per_kp_rmse_dict,
     }
     
     # Write result immediately to CSV
     with open(csv_filename, 'a', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writerow({
+        row = {
             'learning_rate': result_dict['learning_rate'],
             'lambda_sym_max': result_dict['lambda_sym_max'],
             'symmetry_layer': '' if result_dict['symmetry_layer'] is None else result_dict['symmetry_layer'],
             'test_task_loss': result_dict['test_task_loss'],
             'test_sym_loss': result_dict['test_sym_loss'] if result_dict['test_sym_loss'] is not None else '',
             'test_rel_rmse': result_dict['test_rel_rmse'],
-        })
+        }
+        # Add per-KP RMSE columns
+        for i in range(1, 6):
+            key = f'test_per_kp_rel_rmse_kp{i}'
+            row[key] = result_dict.get(key, '')
+        writer.writerow(row)
     
     # Calculate duration
     end_time = time.time()
@@ -189,6 +210,7 @@ def run_benchmark(
     num_rho_layers: int = 3,
     hidden_channels: int = 128,
     run_seeds: list = None,
+    efp_preset: str = 'deg3',
 ):
     """
     Run training experiments with different lambda_sym and symmetry_layer values.
@@ -198,9 +220,14 @@ def run_benchmark(
         num_rho_layers: Number of rho layers in DeepSets
         hidden_channels: Hidden channel dimension
         run_seeds: List of seeds to run
+        efp_preset: EFP preset name (default: 'deg3')
     """
     if run_seeds is None:
         run_seeds = [42]
+    
+    # Load EFP preset
+    config_dir = Path(__file__).parent / "config"
+    edges_list = load_efp_preset(efp_preset, str(config_dir))
     
     # Experiment configuration
     #lambda_sym_values = [0, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
@@ -219,7 +246,10 @@ def run_benchmark(
     os.makedirs('results', exist_ok=True)
     
     fieldnames = ['learning_rate', 'lambda_sym_max', 'symmetry_layer', 
-                  'test_task_loss', 'test_sym_loss', 'test_rel_rmse']
+                  'test_task_loss', 'test_sym_loss', 'test_rel_rmse',
+                  'test_per_kp_rel_rmse_kp1', 'test_per_kp_rel_rmse_kp2', 
+                  'test_per_kp_rel_rmse_kp3', 'test_per_kp_rel_rmse_kp4', 
+                  'test_per_kp_rel_rmse_kp5']
     
     print("Starting benchmark experiments...")
     print(f"Lambda_sym values: {lambda_sym_values}")
@@ -227,6 +257,7 @@ def run_benchmark(
     print(f"Learning rates: {learning_rates}")
     print(f"Seeds: {run_seeds}")
     print(f"Architecture: num_phi_layers={num_phi_layers}, num_rho_layers={num_rho_layers}")
+    print(f"EFP preset: {efp_preset}")
     total_per_seed = len(lambda_sym_values) * len(symmetry_layers) + 1  # +1 for None case
     print(f"Total experiments per seed per lr: {total_per_seed}")
     print(f"Total experiments: {len(run_seeds) * len(learning_rates) * total_per_seed}\n")
@@ -235,7 +266,7 @@ def run_benchmark(
     for seed_idx, run_seed in enumerate(run_seeds):
         for learning_rate in learning_rates:
             lr_string = f'{learning_rate:.0e}'.replace('-0', '-')
-            csv_filename = f'results/model=deepsets_layers={num_phi_layers}+{num_rho_layers}_lr={lr_string}_seed={run_seed}.csv'
+            csv_filename = f'results/model=deepsets_layers={num_phi_layers}+{num_rho_layers}_lr={lr_string}_kps={efp_preset}_seed={run_seed}.csv'
             
             print(f"\n{'='*60}")
             print(f"Running seed {run_seed} ({seed_idx + 1}/{len(run_seeds)}), lr={learning_rate:.0e}")
@@ -254,14 +285,14 @@ def run_benchmark(
                     run_experiment(
                         symmetry_layer, lambda_sym_max, learning_rate,
                         num_phi_layers, num_rho_layers, hidden_channels,
-                        run_seed, csv_filename, fieldnames
+                        run_seed, csv_filename, fieldnames, edges_list
                     )
             
             # Run baseline experiment with symmetry_layer=None
             run_experiment(
                 None, 0.0, learning_rate,
                 num_phi_layers, num_rho_layers, hidden_channels,
-                run_seed, csv_filename, fieldnames
+                run_seed, csv_filename, fieldnames, edges_list
             )
             
             print(f"\nSeed {run_seed}, lr={learning_rate:.0e} complete. Results saved to {csv_filename}")
@@ -334,6 +365,8 @@ if __name__ == '__main__':
                         help='Hidden channel dimension (default: 128)')
     parser.add_argument('--seeds', nargs='+', default=['42'],
                         help='Seeds to run (individual, comma-separated, or ranges like "42-50")')
+    parser.add_argument('--efp-preset', type=str, default='deg3',
+                        help='EFP preset name (default: deg3)')
     
     args = parser.parse_args()
     
@@ -349,5 +382,6 @@ if __name__ == '__main__':
         num_rho_layers=args.num_rho_layers,
         hidden_channels=args.hidden_channels,
         run_seeds=run_seeds,
+        efp_preset=args.efp_preset,
     )
 

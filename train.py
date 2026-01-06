@@ -7,7 +7,10 @@ import numpy as np
 import random
 import hashlib
 import hydra
+import yaml
+from pathlib import Path
 from omegaconf import DictConfig, OmegaConf
+from typing import List, Tuple
 
 from models import Transformer, DeepSets
 from data.kp_dataset import make_kp_dataloader
@@ -60,9 +63,41 @@ def set_model_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float):
-    """Build dataloader with fixed edges_list configuration."""
-    edges_list = [[(0, 1), (0, 2), (0, 3)]]
+def load_efp_preset(preset_name: str, config_dir: str = "config") -> List[List[Tuple[int, int]]]:
+    """
+    Load EFP preset from config file.
+    
+    Args:
+        preset_name: Name of the preset (e.g., 'deg3')
+        config_dir: Directory containing efp_presets.yaml
+    
+    Returns:
+        List of edge configurations, where each edge config is a list of tuples
+    """
+    preset_file = Path(config_dir) / "efp_presets.yaml"
+    
+    if not preset_file.exists():
+        raise FileNotFoundError(f"EFP presets file not found: {preset_file}")
+    
+    with open(preset_file, 'r') as f:
+        presets = yaml.safe_load(f)
+    
+    if preset_name not in presets:
+        available = ', '.join(presets.keys())
+        raise ValueError(f"EFP preset '{preset_name}' not found. Available presets: {available}")
+    
+    preset = presets[preset_name]
+    edges_raw = preset['edges']
+    
+    # Convert from list format [[0,1], [0,1], [0,1]] to tuple format [(0,1), (0,1), (0,1)]
+    edges_list = []
+    for edge_config in edges_raw:
+        edges_list.append([tuple(edge) for edge in edge_config])
+    
+    return edges_list
+
+def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float, edges_list: List[List[Tuple[int, int]]]):
+    """Build dataloader with specified edges_list configuration."""
     return make_kp_dataloader(
         edges_list=edges_list,
         n_events=n_events,
@@ -188,7 +223,8 @@ def evaluate(
         augmentation_generator: Optional random generator for reproducibility
     
     Returns:
-        Tuple of (task_loss, rel_rmse, sym_loss)
+        Tuple of (task_loss, rel_rmse, sym_loss, per_kp_rel_rmse)
+        where per_kp_rel_rmse is a list of relative RMSE values for each KP
     """
     model.eval()
     with torch.no_grad():
@@ -198,6 +234,14 @@ def evaluate(
         sum_y = 0.0
         sum_y_sq = 0.0
         count = 0
+        
+        # Per-KP statistics
+        num_kps = None
+        per_kp_sum_sq_error = None
+        per_kp_sum_y = None
+        per_kp_sum_y_sq = None
+        per_kp_count = None
+        
         for xb, yb in loader:
             xb = xb.to(device)  # (batch_size, num_particles, 4)
             yb = yb.to(device)  # (batch_size, 1, num_kps)
@@ -206,6 +250,15 @@ def evaluate(
             yb = yb.squeeze(1)
 
             pred = model(xb)  # (batch_size, num_kps)
+            
+            # Initialize per-KP accumulators on first batch
+            if num_kps is None:
+                num_kps = yb.shape[1]
+                per_kp_sum_sq_error = [0.0] * num_kps
+                per_kp_sum_y = [0.0] * num_kps
+                per_kp_sum_y_sq = [0.0] * num_kps
+                per_kp_count = [0] * num_kps
+            
             task_loss += loss_fn(pred, yb).item()
             
             if symmetry_layer is not None:
@@ -220,12 +273,33 @@ def evaluate(
             sum_y += yb.sum().item()
             sum_y_sq += yb.pow(2).sum().item()
             count += yb.numel()
+            
+            # Accumulate per-KP statistics
+            for kp_idx in range(num_kps):
+                kp_diff = diff[:, kp_idx]
+                kp_y = yb[:, kp_idx]
+                per_kp_sum_sq_error[kp_idx] += kp_diff.pow(2).sum().item()
+                per_kp_sum_y[kp_idx] += kp_y.sum().item()
+                per_kp_sum_y_sq[kp_idx] += kp_y.pow(2).sum().item()
+                per_kp_count[kp_idx] += kp_y.numel()
         
         task_loss /= len(loader)
         if symmetry_layer is not None:
             sym_loss /= len(loader)
         _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
-        return task_loss, rel_rmse, sym_loss
+        
+        # Compute per-KP relative RMSEs
+        per_kp_rel_rmse = []
+        for kp_idx in range(num_kps):
+            _, kp_rel_rmse = _accumulate_regression_stats(
+                per_kp_sum_sq_error[kp_idx],
+                per_kp_sum_y[kp_idx],
+                per_kp_sum_y_sq[kp_idx],
+                per_kp_count[kp_idx]
+            )
+            per_kp_rel_rmse.append(kp_rel_rmse)
+        
+        return task_loss, rel_rmse, sym_loss, per_kp_rel_rmse
 
 def run_training(
     # Data params
@@ -236,6 +310,7 @@ def run_training(
     train_split: float = 0.6,
     val_split: float = 0.2,
     test_split: float = 0.2,
+    edges_list: List[List[Tuple[int, int]]] = None,
     # Training params
     num_epochs: int = 100,
     learning_rate: float = 0.001,
@@ -274,6 +349,16 @@ def run_training(
         - test_task_loss, test_relative_rmse, test_sym_loss (if symmetry enabled)
         - model and training configuration
     """
+    # Use default edges_list if not provided
+    if edges_list is None:
+        edges_list = [
+            [(0, 1), (0, 1), (0, 1)],
+            [(0, 1), (0, 1), (1, 2)],
+            [(0, 1), (1, 2), (0, 2)],
+            [(0, 1), (1, 2), (2, 3)],
+            [(0, 1), (0, 2), (0, 3)]
+        ]
+    
     # Derive seeds for different randomness sources
     data_seed = derive_seed(run_seed, "data")
     model_seed = derive_seed(run_seed, "model")
@@ -292,24 +377,27 @@ def run_training(
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        edges_list=edges_list,
     )
     val_loader = build_dataloader(
         n_events=int(num_events * val_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        edges_list=edges_list,
     )
     test_loader = build_dataloader(
         n_events=int(num_events * test_split),
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        edges_list=edges_list,
     )
     
     # Create model
     # Input: 4 channels (E, px, py, pz)
-    # Output: 1 KP value (from edges_list = [[(0, 1), (0, 2), (0, 3)]])
-    num_kps = 1
+    # Output: 5 KP values (from edges_list with 5 EFPs)
+    num_kps = 5
     
     if model_type == 'deepsets':
         model = DeepSets(
@@ -376,7 +464,7 @@ def run_training(
             std_eta=std_eta,
             augmentation_generator=augmentation_generator,
         )
-        val_task_loss, val_rel_rmse, val_sym_loss = evaluate(
+        val_task_loss, val_rel_rmse, val_sym_loss, val_per_kp_rel_rmse = evaluate(
             model, loss_fn, val_loader,
             symmetry_layer=symmetry_layer,
             std_eta=std_eta,
@@ -424,7 +512,7 @@ def run_training(
     if best_model_state is not None:
         model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
     
-    test_task_loss, test_rel_rmse, test_sym_loss = evaluate(
+    test_task_loss, test_rel_rmse, test_sym_loss, test_per_kp_rel_rmse = evaluate(
         model, loss_fn, test_loader,
         symmetry_layer=symmetry_layer,
         std_eta=std_eta,
@@ -441,7 +529,9 @@ def run_training(
         print(f'Number of test events: {int(num_events * test_split)}')
         print(f'Max particles per event: {n_particles}')
         print(f'Number of epochs: {len(train_task_losses)}')
-        print(f'Kinematic polynomial: edges_list = [[(0, 1), (0, 2), (0, 3)]]')
+        print(f'Kinematic polynomials: {len(edges_list)} EFPs')
+        for i, edges in enumerate(edges_list, 1):
+            print(f'  KP {i}: {edges}')
         print('='*25)
         
         # Print configuration section
@@ -474,6 +564,9 @@ def run_training(
         print('='*25)
         print(f'Test task loss:     {test_task_loss:.4e}')
         print(f'Test relative RMSE: {test_rel_rmse:.4f}')
+        print('Per-KP relative RMSE:')
+        for i, rmse in enumerate(test_per_kp_rel_rmse, 1):
+            print(f'  KP {i}: {rmse:.4f}')
         if symmetry_enabled:
             print(f'Test symmetry loss: {test_sym_loss:.4e}')
         print('='*25)
@@ -524,6 +617,7 @@ def run_training(
         result['lambda_sym_max'] = lambda_sym_max
         result['std_eta'] = std_eta
         result['test_sym_loss'] = test_sym_loss
+    result['test_per_kp_rel_rmse'] = test_per_kp_rel_rmse
     return result
 
 
@@ -558,6 +652,13 @@ def main(cfg: DictConfig):
     symmetry_enabled = cfg.get('symmetry', {}).get('enabled', False)
     symmetry_layer = cfg.get('symmetry', {}).get('layer_idx', -1) if symmetry_enabled else None
     
+    # Load EFP preset from config
+    efp_preset_name = cfg.data.get('efp_preset', 'deg3')
+    # Use config directory relative to the script location
+    script_dir = Path(__file__).parent
+    config_dir = script_dir / "config"
+    edges_list = load_efp_preset(efp_preset_name, str(config_dir))
+    
     return run_training(
         # Data params
         num_events=cfg.data.num_events,
@@ -567,6 +668,7 @@ def main(cfg: DictConfig):
         train_split=cfg.data.train_split,
         val_split=cfg.data.val_split,
         test_split=cfg.data.test_split,
+        edges_list=edges_list,
         # Training params
         num_epochs=cfg.training.num_epochs,
         learning_rate=cfg.training.learning_rate,
