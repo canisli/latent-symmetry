@@ -9,6 +9,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+import energyflow as ef
 
 from models import DeepSets
 from symmetry import rand_lorentz
@@ -138,9 +139,32 @@ def main():
     print(f"Device: {device}")
     print(f"Sampling {args.num_samples} Lorentz transformations with std_eta={args.std_eta}")
     
-    # Create 3 fixed particles
+    # Generate training samples with 128 particles (same as train.py)
+    input_scale = 0.9515689  # Default from config.yaml
+    np.random.seed(args.seed)
+    n_particles_train = 128
+    n_samples_train = 1  # Use 1 sample for the histogram
+    
+    # Generate synthetic events as (E,px,py,pz) - same as train.py
+    X_train = ef.gen_random_events_mcom(n_samples_train, n_particles_train, dim=4).astype(np.float32)
+    
+    # Scale inputs (same as train.py)
+    X_train = X_train / input_scale
+    
+    # Convert to tensor and move to device
+    train_particles = torch.from_numpy(X_train).to(device)  # (1, 128, 4)
+    print(f"Generated training sample with {train_particles.shape[1]} particles")
+    
+    # Extract phi layer 1 activations for training particles
+    with torch.no_grad():
+        phi_original = model.forward_with_intermediate(train_particles, layer_idx=1)
+    
+    # phi_original shape: (1, 128, 128)
+    print(f"Training phi activations shape: {phi_original.shape}")
+    
+    # Create 3 fixed particles for orbit visualization
     particles = create_fixed_particles(seed=args.seed).to(device)
-    print(f"Created {particles.shape[1]} fixed particles")
+    print(f"Created {particles.shape[1]} fixed particles for orbit")
     
     # Generate Lorentz orbit
     orbit = generate_lorentz_orbit(
@@ -151,7 +175,7 @@ def main():
     )
     print(f"Generated orbit with shape: {orbit.shape}")
     
-    # Extract phi layer 1 activations
+    # Extract phi layer 1 activations for orbit
     with torch.no_grad():
         phi_activations = model.forward_with_intermediate(orbit, layer_idx=1)
     
@@ -251,37 +275,30 @@ def main():
     fig_hist.suptitle(f'PC1 Distribution per Particle\nModel: {args.model_path}', fontsize=11)
     plt.tight_layout()
     
-    # Histogram of all 128 hidden dimensions across the Lorentz orbit
-    # Flatten all values from all dimensions into a single histogram
+    # Histogram of all 128 hidden dimensions for the training input particles
+    # phi_original shape: (1, 128, 128) -> flatten to get all values
+    phi_original_np = phi_original.cpu().numpy()
+    _, n_particles_actual, hidden_dim_train = phi_original_np.shape
+    original_values = phi_original_np.flatten()  # (128 * 128,) = (16384,)
+    
     fig_hidden, ax_hidden = plt.subplots(figsize=(10, 6))
     
-    # Flatten all values: (num_samples * n_particles * hidden_dim,)
-    all_values = phi_flat.flatten()
-    
     ax_hidden.hist(
-        all_values,
+        original_values,
         bins=50,
         alpha=0.7,
         edgecolor='black',
         linewidth=0.5,
     )
     
-    # Add mean line
-    mean_val = np.mean(all_values)
-    std_val = np.std(all_values)
-    ax_hidden.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean = {mean_val:.4f}')
-    ax_hidden.axvline(mean_val + std_val, color='orange', linestyle='--', linewidth=1.5, alpha=0.7, label=f'±1σ = {std_val:.4f}')
-    ax_hidden.axvline(mean_val - std_val, color='orange', linestyle='--', linewidth=1.5, alpha=0.7)
-    
     ax_hidden.set_xlabel('Hidden Dimension Value', fontsize=12)
     ax_hidden.set_ylabel('Count', fontsize=12)
     ax_hidden.set_title(
-        f'Distribution of All 128 Hidden Dimensions Across Lorentz Orbit\n'
+        f'Distribution of All 128 Hidden Dimensions for Training Input Particles\n'
         f'Model: {args.model_path}\n'
-        f'{args.num_samples} samples × {n_particles} particles × {hidden_dim} dimensions = {len(all_values)} total values',
+        f'{n_particles_actual} particles × {hidden_dim_train} dimensions = {len(original_values)} total values',
         fontsize=11
     )
-    ax_hidden.legend(loc='best')
     ax_hidden.grid(alpha=0.3)
     plt.tight_layout()
     
