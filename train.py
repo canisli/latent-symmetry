@@ -340,6 +340,7 @@ def run_training(
     # Other
     run_seed: int = 42,
     headless: bool = False,
+    save_model_path: str = None,
 ):
     """
     Core training function that can be called directly.
@@ -349,15 +350,6 @@ def run_training(
         - test_task_loss, test_relative_rmse, test_sym_loss (if symmetry enabled)
         - model and training configuration
     """
-    # Use default edges_list if not provided
-    if edges_list is None:
-        edges_list = [
-            [(0, 1), (0, 1), (0, 1)],
-            [(0, 1), (0, 1), (1, 2)],
-            [(0, 1), (1, 2), (0, 2)],
-            [(0, 1), (1, 2), (2, 3)],
-            [(0, 1), (0, 2), (0, 3)]
-        ]
     
     # Derive seeds for different randomness sources
     data_seed = derive_seed(run_seed, "data")
@@ -396,8 +388,10 @@ def run_training(
     
     # Create model
     # Input: 4 channels (E, px, py, pz)
-    # Output: 5 KP values (from edges_list with 5 EFPs)
-    num_kps = 5
+    # Output: num_kps KP values (from edges_list)
+    if edges_list is None:
+        raise ValueError("edges_list must be provided to determine num_kps")
+    num_kps = len(edges_list)
     
     if model_type == 'deepsets':
         model = DeepSets(
@@ -512,6 +506,14 @@ def run_training(
     if best_model_state is not None:
         model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
     
+    # Save model if path is provided
+    if save_model_path is not None:
+        save_path = Path(save_model_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model.state_dict(), save_path)
+        if not headless:
+            print(f'\nModel saved to: {save_path}')
+    
     test_task_loss, test_rel_rmse, test_sym_loss, test_per_kp_rel_rmse = evaluate(
         model, loss_fn, test_loader,
         symmetry_layer=symmetry_layer,
@@ -592,6 +594,60 @@ def run_training(
         ax.legend(loc='best')
         ax.grid(alpha=0.3)
         
+        plt.show()
+        
+        # Collect predictions and true values for histogram plotting
+        model.eval()
+        all_predictions = []
+        all_true_values = []
+        with torch.no_grad():
+            for xb, yb in test_loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                yb = yb.squeeze(1)  # (batch_size, num_kps)
+                pred = model(xb)  # (batch_size, num_kps)
+                all_predictions.append(pred.cpu().numpy())
+                all_true_values.append(yb.cpu().numpy())
+        
+        # Concatenate all batches
+        all_predictions = np.concatenate(all_predictions, axis=0)  # (n_test_events, num_kps)
+        all_true_values = np.concatenate(all_true_values, axis=0)  # (n_test_events, num_kps)
+        
+        # Plot histograms, one for each KP, in rows of 5
+        n_cols = 5
+        n_rows = math.ceil(num_kps / n_cols)
+        fig_width = 4 * n_cols
+        fig_height = 4 * n_rows
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
+        
+        # Flatten axes to 1D for easier indexing (works for both 1D and 2D arrays)
+        axes = axes.flatten() if hasattr(axes, 'flatten') else np.array([axes])
+        
+        for kp_idx in range(num_kps):
+            ax = axes[kp_idx]
+            true_vals = all_true_values[:, kp_idx]
+            pred_vals = all_predictions[:, kp_idx]
+            
+            # Determine bins based on the range of both true and predicted values
+            min_val = min(true_vals.min(), pred_vals.min())
+            max_val = max(true_vals.max(), pred_vals.max())
+            bins = np.linspace(min_val, max_val, 50)
+            
+            # Plot histograms
+            ax.hist(true_vals, bins=bins, alpha=0.6, label='True', color='blue', edgecolor='black', linewidth=0.5)
+            ax.hist(pred_vals, bins=bins, alpha=0.6, label='Predicted', color='red', edgecolor='black', linewidth=0.5)
+            
+            ax.set_xlabel('log1p(KP value)')
+            ax.set_ylabel('Count')
+            ax.set_title(f'KP {kp_idx + 1}\n{edges_list[kp_idx]}')
+            ax.legend()
+            ax.grid(alpha=0.3)
+        
+        # Hide unused subplot axes
+        for kp_idx in range(num_kps, len(axes)):
+            axes[kp_idx].axis('off')
+        
+        plt.tight_layout()
         plt.show()
     
     # Return results dictionary
@@ -698,6 +754,7 @@ def main(cfg: DictConfig):
         # Other
         run_seed=cfg.run_seed,
         headless=cfg.headless,
+        save_model_path=cfg.get('save_model_path', None),
     )
 
 

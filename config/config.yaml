@@ -36,6 +36,7 @@ symmetry:
 # Other parameters
 run_seed: 42
 headless: false
+save_model_path: null  # Path to save model checkpoint (.pt file), null to disable
 
 # Output directory
 outputs_dir: ./outputs
