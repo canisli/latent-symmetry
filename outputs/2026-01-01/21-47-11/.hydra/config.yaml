@@ -1,0 +1,25 @@
+model:
+  type: deepsets
+  num_phi_layers: 6
+  num_rho_layers: 6
+  hidden_channels: 256
+  pool_mode: sum
+data:
+  num_events: 50000
+  n_particles: 128
+  batch_size: 256
+  input_scale: null
+  input_scale_events: 2000
+  train_split: 0.6
+  val_split: 0.2
+  test_split: 0.2
+training:
+  num_epochs: 100
+  learning_rate: 0.001
+  warmup_epochs: 5
+  weight_decay: 0.0
+  grad_clip: null
+  dropout: 0.0
+run_seed: 42
+headless: false
+outputs_dir: ./outputs

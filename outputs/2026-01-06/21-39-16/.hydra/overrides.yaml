@@ -1,0 +1,5 @@
+- model=deepsets
+- model.num_phi_layers=4
+- model.num_rho_layers=4
+- symmetry.enabled=false
+- save_model_path=4x4_none.pt

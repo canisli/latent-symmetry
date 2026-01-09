@@ -1,0 +1,9 @@
+- headless=true
+- run_seed=42
+- training.learning_rate=0.0001
+- model.num_phi_layers=4
+- model.num_rho_layers=4
+- model.hidden_channels=128
+- symmetry.enabled=true
+- symmetry.layer_idx=1
+- symmetry.lambda_sym_max=0.001

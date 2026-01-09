@@ -1,0 +1,7 @@
+- model=deepsets
+- model.num_phi_layers=4
+- model.num_rho_layers=4
+- symmetry.enabled=true
+- symmetry.layer_idx=1
+- symmetry.lambda_sym_max=10.0
+- data.efp_preset=deg5

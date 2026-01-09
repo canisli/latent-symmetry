@@ -1,0 +1,30 @@
+model:
+  type: deepsets
+  num_phi_layers: 3
+  num_rho_layers: 3
+  hidden_channels: 128
+  pool_mode: sum
+data:
+  num_events: 10000
+  n_particles: 128
+  batch_size: 256
+  input_scale: 0.9515689
+  train_split: 0.6
+  val_split: 0.2
+  test_split: 0.2
+training:
+  num_epochs: 100
+  learning_rate: 0.0001
+  warmup_epochs: 5
+  weight_decay: 0.0
+  grad_clip: null
+  dropout: 0.0
+  early_stopping_patience: 5
+symmetry:
+  enabled: true
+  layer_idx: 4
+  lambda_sym_max: 0.001
+  std_eta: 0.5
+run_seed: 42
+headless: true
+outputs_dir: ./outputs
