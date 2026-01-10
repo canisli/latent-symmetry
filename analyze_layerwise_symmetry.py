@@ -311,7 +311,7 @@ def main(num_hidden_layers=6, hidden_dim=128, learning_rate=3e-4,
     model_seed = derive_seed(run_seed, "model")
     
     # Create dataset
-    field = ScalarFieldDataset(10000, seed=data_seed, field_type=field_type)
+    field = ScalarFieldDataset(100000, seed=data_seed, field_type=field_type)
     batch_size = 128
     
     generator = torch.Generator().manual_seed(data_seed)

@@ -54,7 +54,15 @@ class ScalarFieldDataset(Dataset):
         if seed is not None:
             torch.manual_seed(seed)
         self.field_type = field_type
-        self.X = torch.rand((n_samples, 3)) * 10 - 5 # uniformly distributed in [-5, 5]
+        
+        # Sample uniformly from sphere of radius 5
+        # Method: sample direction uniformly on unit sphere, then sample radius uniformly in [0, R]
+        # For uniform volume density, use r = R * u^(1/3) where u ~ Uniform[0,1]
+        direction = torch.randn((n_samples, 3))
+        direction = direction / direction.norm(dim=-1, keepdim=True)  # normalize to unit sphere
+        radius = 5.0 * (torch.rand(n_samples) ** (1/3))  # uniform volume density
+        self.X = direction * radius.unsqueeze(-1)
+        
         y_flat = compute_scalar_field(self.X, field_type=field_type)
         # Ensure y has shape [n_samples, 1] to match model output shape
         self.y = y_flat.unsqueeze(-1) if y_flat.dim() == 1 else y_flat
