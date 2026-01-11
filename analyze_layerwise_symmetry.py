@@ -36,7 +36,8 @@ def train_with_checkpoints(model, loss_fn, train_loader, val_loader, optimizer,
         checkpoint_fractions: List of fractions (0 to 1) at which to save checkpoints
     
     Returns:
-        List of (epoch, state_dict) tuples for each checkpoint
+        checkpoints: List of (epoch, state_dict) tuples for each checkpoint
+        loss_history: Dict with 'train' and 'val' keys, each containing list of losses per epoch
     """
     import copy
     
@@ -47,11 +48,33 @@ def train_with_checkpoints(model, loss_fn, train_loader, val_loader, optimizer,
     checkpoint_epochs[-1] = num_epochs
     
     checkpoints = []
+    loss_history = {'train': [], 'val': []}
     
     # Save initial state (epoch 0, before any training)
     if 0 in checkpoint_epochs:
         checkpoints.append((0, copy.deepcopy(model.state_dict())))
         print(f"Saved checkpoint at epoch 0 (before training)")
+        
+        # Compute initial losses
+        model.eval()
+        train_loss = 0
+        with torch.no_grad():
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                pred = model(xb)
+                train_loss += loss_fn(pred, yb).item()
+        train_loss /= len(train_loader)
+        
+        val_loss = 0
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                pred = model(xb)
+                val_loss += loss_fn(pred, yb).item()
+        val_loss /= len(val_loader)
+        
+        loss_history['train'].append(train_loss)
+        loss_history['val'].append(val_loss)
     
     pbar = tqdm(range(num_epochs), desc="Training baseline")
     
@@ -79,6 +102,10 @@ def train_with_checkpoints(model, loss_fn, train_loader, val_loader, optimizer,
                 val_loss += loss_fn(pred, yb).item()
         val_loss /= len(val_loader)
         
+        # Record losses
+        loss_history['train'].append(train_loss)
+        loss_history['val'].append(val_loss)
+        
         pbar.set_postfix({'train': f'{train_loss:.2e}', 'val': f'{val_loss:.2e}'})
         
         # Save checkpoint if this is a checkpoint epoch (after training)
@@ -87,7 +114,7 @@ def train_with_checkpoints(model, loss_fn, train_loader, val_loader, optimizer,
             checkpoints.append((actual_epoch, copy.deepcopy(model.state_dict())))
             print(f"Saved checkpoint at epoch {actual_epoch}")
     
-    return checkpoints
+    return checkpoints, loss_history
 
 
 def compute_layerwise_symmetry(model, data_loader, num_hidden_layers, num_samples=10, show_progress=True):
@@ -129,6 +156,59 @@ def compute_layerwise_symmetry(model, data_loader, num_hidden_layers, num_sample
     std_losses = {idx: np.std(losses) for idx, losses in layer_losses.items()}
     
     return avg_losses, std_losses
+
+
+def plot_train_val_loss(loss_history, num_epochs, save_path=None):
+    """
+    Plot training and validation loss curves.
+    
+    Args:
+        loss_history: Dict with 'train' and 'val' keys, each containing list of losses per epoch
+        num_epochs: Total number of training epochs
+        save_path: Optional path to save the figure
+    """
+    epochs = list(range(len(loss_history['train'])))
+    
+    # Create figure with distinctive styling
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Set background
+    ax.set_facecolor('#f8f9fa')
+    fig.patch.set_facecolor('#ffffff')
+    
+    # Plot train and val losses
+    ax.plot(epochs, loss_history['train'], 'o-', color='#3b82f6', linewidth=2, 
+            markersize=4, label='Train Loss', alpha=0.8)
+    ax.plot(epochs, loss_history['val'], 's-', color='#ef4444', linewidth=2, 
+            markersize=4, label='Validation Loss', alpha=0.8)
+    
+    # Styling
+    ax.set_xlabel('Epoch', fontsize=14, fontweight='medium')
+    ax.set_ylabel('Loss (MSE)', fontsize=14, fontweight='medium')
+    ax.set_title('Training and Validation Loss\n(Baseline: No Symmetry Penalty)', 
+                 fontsize=16, fontweight='bold', pad=20)
+    
+    # Use log scale for y-axis if losses span orders of magnitude
+    if max(loss_history['train'] + loss_history['val']) / min(loss_history['train'] + loss_history['val']) > 100:
+        ax.set_yscale('log')
+    
+    ax.tick_params(axis='both', labelsize=11)
+    
+    # Grid
+    ax.grid(True, alpha=0.4, linestyle='--', linewidth=0.8)
+    ax.set_axisbelow(True)
+    
+    # Legend
+    ax.legend(loc='upper right', fontsize=11, framealpha=0.95)
+    
+    # Tight layout
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        print(f"Saved figure to {save_path}")
+    
+    return fig, ax
 
 
 def plot_layerwise_symmetry_evolution(checkpoint_results, num_hidden_layers, num_epochs, save_path=None):
@@ -337,7 +417,7 @@ def main(num_hidden_layers=6, hidden_dim=128, learning_rate=3e-4,
     loss_fn = torch.nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.0)
     
-    checkpoints = train_with_checkpoints(
+    checkpoints, loss_history = train_with_checkpoints(
         model, loss_fn, train_loader, val_loader, optimizer, 
         num_epochs=num_epochs, checkpoint_fractions=[0, 1/3, 2/3, 1]
     )
@@ -375,11 +455,17 @@ def main(num_hidden_layers=6, hidden_dim=128, learning_rate=3e-4,
         print(row)
     print("="*60)
     
-    # Generate visualization
-    fig, ax = plot_layerwise_symmetry_evolution(checkpoint_results, num_hidden_layers, num_epochs, save_path)
+    # Generate visualizations
+    # Plot train/val loss
+    loss_save_path = save_path.replace('.png', '_loss.png') if save_path else 'train_val_loss.png'
+    fig_loss, ax_loss = plot_train_val_loss(loss_history, num_epochs, loss_save_path)
     plt.show()
     
-    return checkpoint_results
+    # Plot layerwise symmetry evolution
+    fig_sym, ax_sym = plot_layerwise_symmetry_evolution(checkpoint_results, num_hidden_layers, num_epochs, save_path)
+    plt.show()
+    
+    return checkpoint_results, loss_history
 
 
 if __name__ == '__main__':
