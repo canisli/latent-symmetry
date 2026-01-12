@@ -96,14 +96,30 @@ def load_efp_preset(preset_name: str, config_dir: str = "config") -> List[List[T
     
     return edges_list
 
-def build_dataloader(n_events: int, n_particles: int, batch_size: int, input_scale: float, edges_list: List[List[Tuple[int, int]]]):
-    """Build dataloader with specified edges_list configuration."""
+def build_dataloader(
+    n_events: int,
+    n_particles: int,
+    batch_size: int,
+    input_scale: float,
+    edges_list: List[List[Tuple[int, int]]],
+    measure: str = 'kinematic',
+    beta: float = 2.0,
+    kappa: float = 1.0,
+    normed: bool = False,
+    target_transform: str = 'log1p',
+):
+    """Build dataloader with specified edges_list and measure configuration."""
     return make_kp_dataloader(
         edges_list=edges_list,
         n_events=n_events,
         n_particles=n_particles,
         batch_size=batch_size,
         input_scale=input_scale,
+        measure=measure,
+        beta=beta,
+        kappa=kappa,
+        normed=normed,
+        target_transform=target_transform,
     )
 
 
@@ -311,6 +327,13 @@ def run_training(
     val_split: float = 0.2,
     test_split: float = 0.2,
     edges_list: List[List[Tuple[int, int]]] = None,
+    # Target type params
+    target_type: str = 'kinematic',  # 'kinematic' (Lorentz invariant) or 'efp' (non-invariant)
+    efp_measure: str = 'eeefm',
+    efp_beta: float = 2.0,
+    efp_kappa: float = 1.0,
+    efp_normed: bool = False,  # If True, normalize energies (usually False for non-invariant)
+    target_transform: str = 'log1p',  # 'log1p', 'log_standardized', or 'standardized'
     # Training params
     num_epochs: int = 100,
     learning_rate: float = 0.001,
@@ -345,6 +368,12 @@ def run_training(
     """
     Core training function that can be called directly.
     
+    Args:
+        target_type: 'kinematic' for Lorentz-invariant KPs, 'efp' for non-invariant EFPs
+        efp_measure: EFP measure to use when target_type='efp' (default: 'eeefm')
+        efp_beta: Angular weighting exponent for EFPs
+        efp_kappa: Energy weighting exponent for EFPs
+    
     Returns:
         Dictionary with training results including:
         - test_task_loss, test_relative_rmse, test_sym_loss (if symmetry enabled)
@@ -363,6 +392,20 @@ def run_training(
     np.random.seed(data_seed)
     random.seed(data_seed)
     
+    # Determine measure parameters based on target type
+    if target_type == 'kinematic':
+        measure = 'kinematic'
+        beta = 2.0  # ignored by kinematic measure
+        kappa = 1.0  # ignored by kinematic measure
+        normed = False  # ignored by kinematic measure
+    elif target_type == 'efp':
+        measure = efp_measure
+        beta = efp_beta
+        kappa = efp_kappa
+        normed = efp_normed
+    else:
+        raise ValueError(f"Unknown target_type: {target_type}. Must be 'kinematic' or 'efp'")
+    
     # Build dataloaders 
     train_loader = build_dataloader(
         n_events=int(num_events * train_split),
@@ -370,6 +413,11 @@ def run_training(
         batch_size=batch_size,
         input_scale=input_scale,
         edges_list=edges_list,
+        measure=measure,
+        beta=beta,
+        kappa=kappa,
+        normed=normed,
+        target_transform=target_transform,
     )
     val_loader = build_dataloader(
         n_events=int(num_events * val_split),
@@ -377,6 +425,11 @@ def run_training(
         batch_size=batch_size,
         input_scale=input_scale,
         edges_list=edges_list,
+        measure=measure,
+        beta=beta,
+        kappa=kappa,
+        normed=normed,
+        target_transform=target_transform,
     )
     test_loader = build_dataloader(
         n_events=int(num_events * test_split),
@@ -384,6 +437,11 @@ def run_training(
         batch_size=batch_size,
         input_scale=input_scale,
         edges_list=edges_list,
+        measure=measure,
+        beta=beta,
+        kappa=kappa,
+        normed=normed,
+        target_transform=target_transform,
     )
     
     # Create model
@@ -531,9 +589,14 @@ def run_training(
         print(f'Number of test events: {int(num_events * test_split)}')
         print(f'Max particles per event: {n_particles}')
         print(f'Number of epochs: {len(train_task_losses)}')
-        print(f'Kinematic polynomials: {len(edges_list)} EFPs')
+        # Show target type info
+        if target_type == 'kinematic':
+            print(f'Target type: kinematic (Lorentz invariant)')
+        else:
+            print(f'Target type: EFP ({measure}, beta={beta}, kappa={kappa}) - NOT Lorentz invariant')
+        print(f'Polynomials: {len(edges_list)} graphs')
         for i, edges in enumerate(edges_list, 1):
-            print(f'  KP {i}: {edges}')
+            print(f'  {i}: {edges}')
         print('='*25)
         
         # Print configuration section
@@ -661,6 +724,7 @@ def run_training(
         'epochs_trained': epochs_trained,
         'num_epochs': num_epochs,
         'early_stopped': early_stopped,
+        'target_type': target_type,
     }
     if model_type == 'deepsets':
         result['num_phi_layers'] = num_phi_layers
@@ -725,6 +789,13 @@ def main(cfg: DictConfig):
         val_split=cfg.data.val_split,
         test_split=cfg.data.test_split,
         edges_list=edges_list,
+        # Target type params
+        target_type=cfg.data.get('target_type', 'kinematic'),
+        efp_measure=cfg.data.get('efp_measure', 'eeefm'),
+        efp_beta=cfg.data.get('efp_beta', 2.0),
+        efp_kappa=cfg.data.get('efp_kappa', 1.0),
+        efp_normed=cfg.data.get('efp_normed', False),
+        target_transform=cfg.data.get('target_transform', 'log1p'),
         # Training params
         num_epochs=cfg.training.num_epochs,
         learning_rate=cfg.training.learning_rate,
