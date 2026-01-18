@@ -15,6 +15,16 @@ data:
   val_split: 0.2
   test_split: 0.2
   efp_preset: deg3  # EFP preset name (see config/efp_presets.yaml)
+  # Target type: 'kinematic' (Lorentz invariant) or 'efp' (non-invariant eeefm measure)
+  target_type: kinematic
+  # EFP measure parameters (only used when target_type='efp')
+  efp_measure: eeefm  # e+e- EFM measure (NOT Lorentz invariant)
+  efp_beta: 2.0       # angular weighting exponent
+  efp_kappa: 1.0      # energy weighting exponent
+  efp_normed: false   # if true, normalize energies so sum(z_i)=1 (usually false for varied output)
+  # Target transformation: 'log1p' (default, compresses large values), 
+  # 'log_standardized' (preserves relative diffs better), or 'standardized' (linear)
+  target_transform: log1p
 
 # Training parameters
 training:

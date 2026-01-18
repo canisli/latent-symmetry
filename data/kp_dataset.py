@@ -13,11 +13,22 @@ def compute_kps(
     edges_list: List[List[Tuple[int,int]]],
     measure: str = 'kinematic',
     coords: str = 'epxpypz',
+    beta: float = 2.0,
+    kappa: float = 1.0,
+    normed: bool = False,
 ) -> np.ndarray:
     """
     Returns Y with shape (N, K) where K=len(edges_list).
     Truncates each event to its non-padded particles before calling EFPSet.
-    Computes kinematic polynomials using Mandelstam invariants.
+    
+    For measure='kinematic': Computes Lorentz-invariant kinematic polynomials 
+        using Mandelstam invariants (beta/kappa/normed are ignored).
+    For measure='eeefm': Computes e+e- EFPs which are NOT Lorentz invariant
+        (only rotationally invariant). Uses beta, kappa, and normed parameters.
+        
+    Args:
+        normed: If True, normalize energies so sum(z_i) = 1. Default False
+                to preserve scale information for non-invariant targets.
     """
     fm = np.asarray(fourmomenta, dtype=np.float32)
     if fm.ndim != 3 or fm.shape[-1] != 4:
@@ -26,8 +37,10 @@ def compute_kps(
     # mask of real (non-zero) four-vectors: (N, M)
     mask = np.any(fm != 0.0, axis=2)
 
+    # Build EFPSet with appropriate parameters
+    # Note: kinematic measure ignores beta/kappa/normed, but eeefm uses them
     kps = EFPSet(
-        *edges_list, measure=measure, coords=coords
+        *edges_list, measure=measure, coords=coords, beta=beta, kappa=kappa, normed=normed
     )
 
     out = np.zeros((fm.shape[0], len(edges_list)), dtype=np.float32)
@@ -69,20 +82,52 @@ def make_kp_dataloader(
     measure: str = 'kinematic',
     coords: str = 'epxpypz',
     input_scale: float = 1.0,
+    beta: float = 2.0,
+    kappa: float = 1.0,
+    normed: bool = False,
+    target_transform: str = 'log1p',
 ):
     """
     Generate a DataLoader for kinematic polynomial surrogate training.
     
     input_scale rescales the four-momenta globally to stabilize training.
-    Targets are log1p-transformed KP values computed on UNSCALED momenta.
+    
+    Args:
+        edges_list: List of edge configurations for EFPs
+        n_events: Number of events to generate
+        n_particles: Number of particles per event
+        batch_size: Batch size for DataLoader
+        measure: 'kinematic' (Lorentz invariant) or 'eeefm' (non-invariant)
+        coords: Coordinate system ('epxpypz')
+        input_scale: Scale factor for input four-momenta
+        beta: Angular weighting exponent (used by eeefm, ignored by kinematic)
+        kappa: Energy weighting exponent (used by eeefm, ignored by kinematic)
+        normed: If True, normalize energies so sum(z_i) = 1 (default False)
+        target_transform: How to transform targets:
+            - 'log1p': log(1+x), good for KPs (compresses large values)
+            - 'log_standardized': log(x) then z-score normalize (preserves relative diffs)
+            - 'standardized': z-score normalize raw values (linear, preserves structure)
     """
     
     # Generate synthetic events as (E,px,py,pz) 
     X = ef.gen_random_events_mcom(n_events, n_particles, dim=4).astype(np.float32)
     
-    # Compute KP targets on UNSCALED momenta (KPs scale as p^k, so must use original scale)
-    Y = compute_kps(X, edges_list, measure=measure, coords=coords)
-    Y = np.log1p(Y)
+    # Compute KP/EFP targets on UNSCALED momenta
+    Y = compute_kps(X, edges_list, measure=measure, coords=coords, beta=beta, kappa=kappa, normed=normed)
+    
+    # Apply target transformation
+    if target_transform == 'log1p':
+        # Standard: log(1+x), compresses large differences
+        Y = np.log1p(Y)
+    elif target_transform == 'log_standardized':
+        # log(x) then standardize - preserves relative differences better
+        Y = np.log(Y + 1e-10)  # small epsilon to avoid log(0)
+        Y = (Y - Y.mean(axis=0, keepdims=True)) / (Y.std(axis=0, keepdims=True) + 1e-10)
+    elif target_transform == 'standardized':
+        # Raw standardization - fully preserves relative structure
+        Y = (Y - Y.mean(axis=0, keepdims=True)) / (Y.std(axis=0, keepdims=True) + 1e-10)
+    else:
+        raise ValueError(f"Unknown target_transform: {target_transform}")
     
     # Scale inputs AFTER computing targets (for numerical stability in the model)
     denom = float(input_scale) if input_scale not in (0, None) else 1.0
@@ -105,4 +150,35 @@ def estimate_input_scale(n_events: int, n_particles: int, seed: Optional[int] = 
     X = ef.gen_random_events_mcom(n_events, n_particles, dim=4).astype(np.float32)
     scale = float(np.std(X))
     # Avoid degeneracy
+    return scale if scale > 1e-12 else 1.0
+
+
+def estimate_target_scale(
+    edges_list: List[List[Tuple[int,int]]],
+    n_events: int,
+    n_particles: int,
+    measure: str = 'kinematic',
+    coords: str = 'epxpypz',
+    beta: float = 2.0,
+    kappa: float = 1.0,
+    normed: bool = False,
+    seed: Optional[int] = None,
+) -> float:
+    """
+    Estimate the standard deviation of raw (pre-log1p) target values.
+    
+    This is useful for understanding the scale difference between different
+    measures (e.g., kinematic vs eeefm).
+    
+    Returns:
+        Standard deviation of raw target values
+    """
+    if seed is not None:
+        np.random.seed(seed)
+        random.seed(seed)
+    
+    X = ef.gen_random_events_mcom(n_events, n_particles, dim=4).astype(np.float32)
+    Y = compute_kps(X, edges_list, measure=measure, coords=coords, beta=beta, kappa=kappa, normed=normed)
+    
+    scale = float(np.std(Y))
     return scale if scale > 1e-12 else 1.0
