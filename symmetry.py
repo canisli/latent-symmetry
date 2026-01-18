@@ -280,6 +280,32 @@ def rand_lorentz(
     return trafo
 
 
+def lorentz_inverse(L: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the inverse of a Lorentz transformation matrix.
+    
+    For a proper Lorentz transformation L, the inverse satisfies:
+        L^(-1) = η L^T η
+    where η = diag(1, -1, -1, -1) is the Minkowski metric.
+    
+    Args:
+        L: Lorentz transformation matrix of shape (..., 4, 4)
+    
+    Returns:
+        L_inv: Inverse Lorentz transformation of shape (..., 4, 4)
+    """
+    # Build Minkowski metric η = diag(1, -1, -1, -1)
+    eta = torch.diag(torch.tensor([1.0, -1.0, -1.0, -1.0], 
+                                   device=L.device, dtype=L.dtype))
+    
+    # L^(-1) = η L^T η
+    # For batched input, we need to handle the transpose correctly
+    L_T = L.transpose(-2, -1)
+    L_inv = eta @ L_T @ eta
+    
+    return L_inv
+
+
 # ============================================================================
 # Symmetry loss function
 # ============================================================================

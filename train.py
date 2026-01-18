@@ -239,17 +239,16 @@ def evaluate(
         augmentation_generator: Optional random generator for reproducibility
     
     Returns:
-        Tuple of (task_loss, rel_rmse, sym_loss, per_kp_rel_rmse)
-        where per_kp_rel_rmse is a list of relative RMSE values for each KP
+        Tuple of (task_loss, rel_rmse, sym_loss, per_kp_rel_rmse, per_kp_rmse, per_kp_std)
+        where:
+        - per_kp_rel_rmse: list of relative RMSE values for each KP
+        - per_kp_rmse: list of absolute RMSE values for each KP
+        - per_kp_std: list of standard deviations of targets for each KP
     """
     model.eval()
     with torch.no_grad():
         task_loss = 0
         sym_loss = 0
-        sum_sq_error = 0.0
-        sum_y = 0.0
-        sum_y_sq = 0.0
-        count = 0
         
         # Per-KP statistics
         num_kps = None
@@ -285,10 +284,6 @@ def evaluate(
                 ).item()
             
             diff = pred - yb
-            sum_sq_error += diff.pow(2).sum().item()
-            sum_y += yb.sum().item()
-            sum_y_sq += yb.pow(2).sum().item()
-            count += yb.numel()
             
             # Accumulate per-KP statistics
             for kp_idx in range(num_kps):
@@ -302,11 +297,13 @@ def evaluate(
         task_loss /= len(loader)
         if symmetry_layer is not None:
             sym_loss /= len(loader)
-        _, rel_rmse = _accumulate_regression_stats(sum_sq_error, sum_y, sum_y_sq, count)
         
-        # Compute per-KP relative RMSEs
+        # Compute per-KP metrics
         per_kp_rel_rmse = []
+        per_kp_rmse = []
+        per_kp_std = []
         for kp_idx in range(num_kps):
+            # Relative RMSE
             _, kp_rel_rmse = _accumulate_regression_stats(
                 per_kp_sum_sq_error[kp_idx],
                 per_kp_sum_y[kp_idx],
@@ -314,8 +311,22 @@ def evaluate(
                 per_kp_count[kp_idx]
             )
             per_kp_rel_rmse.append(kp_rel_rmse)
+            
+            # Absolute RMSE
+            kp_mse = per_kp_sum_sq_error[kp_idx] / per_kp_count[kp_idx] if per_kp_count[kp_idx] > 0 else 0.0
+            kp_rmse = math.sqrt(kp_mse)
+            per_kp_rmse.append(kp_rmse)
+            
+            # Standard deviation of targets
+            kp_mean = per_kp_sum_y[kp_idx] / per_kp_count[kp_idx] if per_kp_count[kp_idx] > 0 else 0.0
+            kp_variance = (per_kp_sum_y_sq[kp_idx] / per_kp_count[kp_idx] - kp_mean ** 2) if per_kp_count[kp_idx] > 0 else 0.0
+            kp_std = math.sqrt(max(kp_variance, 0.0))
+            per_kp_std.append(kp_std)
         
-        return task_loss, rel_rmse, sym_loss, per_kp_rel_rmse
+        # Overall relative RMSE is the mean of per-KP relative RMSE values
+        rel_rmse = np.mean(per_kp_rel_rmse) if per_kp_rel_rmse else float("nan")
+        
+        return task_loss, rel_rmse, sym_loss, per_kp_rel_rmse, per_kp_rmse, per_kp_std
 
 def run_training(
     # Data params
@@ -516,7 +527,7 @@ def run_training(
             std_eta=std_eta,
             augmentation_generator=augmentation_generator,
         )
-        val_task_loss, val_rel_rmse, val_sym_loss, val_per_kp_rel_rmse = evaluate(
+        val_task_loss, val_rel_rmse, val_sym_loss, val_per_kp_rel_rmse, val_per_kp_rmse, val_per_kp_std = evaluate(
             model, loss_fn, val_loader,
             symmetry_layer=symmetry_layer,
             std_eta=std_eta,
@@ -572,7 +583,7 @@ def run_training(
         if not headless:
             print(f'\nModel saved to: {save_path}')
     
-    test_task_loss, test_rel_rmse, test_sym_loss, test_per_kp_rel_rmse = evaluate(
+    test_task_loss, test_rel_rmse, test_sym_loss, test_per_kp_rel_rmse, test_per_kp_rmse, test_per_kp_std = evaluate(
         model, loss_fn, test_loader,
         symmetry_layer=symmetry_layer,
         std_eta=std_eta,
@@ -627,13 +638,15 @@ def run_training(
         print('\n' + '='*25)
         print('RESULTS')
         print('='*25)
-        print(f'Test task loss:     {test_task_loss:.4e}')
-        print(f'Test relative RMSE: {test_rel_rmse:.4f}')
-        print('Per-KP relative RMSE:')
-        for i, rmse in enumerate(test_per_kp_rel_rmse, 1):
-            print(f'  KP {i}: {rmse:.4f}')
+        print(f'Test task loss (MSE on transformed targets): {test_task_loss:.4e}')
+        print('\nPer-KP metrics:')
+        print(f'{"KP":<4} {"Rel RMSE":<12} {"RMSE":<12} {"Std":<12}')
+        print('-' * 40)
+        for i, (rel_rmse, rmse, std) in enumerate(zip(test_per_kp_rel_rmse, test_per_kp_rmse, test_per_kp_std), 1):
+            print(f'{i:<4} {rel_rmse:<12.6f} {rmse:<12.6e} {std:<12.6e}')
+        print(f'\nTest relative RMSE (mean): {test_rel_rmse:.4f}')
         if symmetry_enabled:
-            print(f'Test symmetry loss: {test_sym_loss:.4e}')
+            print(f'\nTest symmetry loss: {test_sym_loss:.4e}')
         print('='*25)
         
         # Simple loss plot
@@ -738,6 +751,8 @@ def run_training(
         result['std_eta'] = std_eta
         result['test_sym_loss'] = test_sym_loss
     result['test_per_kp_rel_rmse'] = test_per_kp_rel_rmse
+    result['test_per_kp_rmse'] = test_per_kp_rmse
+    result['test_per_kp_std'] = test_per_kp_std
     return result
 
 
