@@ -235,10 +235,16 @@ def relative_symmetry_loss_augmented(
         if mask is None:
             mask = torch.any(x != 0.0, dim=-1)  # (B, N)
         
-        diff = h1 - h2
+        # Center by h1's batch mean for translation invariance
+        # h1, h2: (B, N, hidden) -> mean over batch (dim=0) gives (N, hidden)
+        mean_h1 = h1.mean(dim=0)  # (N, hidden)
+        h1_centered = h1 - mean_h1  # (B, N, hidden)
+        h2_centered = h2 - mean_h1  # (B, N, hidden)
+        
+        diff = h1_centered - h2_centered
         diff_sq = diff.pow(2).sum(dim=-1)  # (B, N)
-        h1_sq = h1.pow(2).sum(dim=-1)  # (B, N)
-        h2_sq = h2.pow(2).sum(dim=-1)  # (B, N)
+        h1_sq = h1_centered.pow(2).sum(dim=-1)  # (B, N)
+        h2_sq = h2_centered.pow(2).sum(dim=-1)  # (B, N)
         
         per_particle_rel_loss = diff_sq / (h1_sq + h2_sq + eps)  # (B, N)
         
@@ -249,10 +255,15 @@ def relative_symmetry_loss_augmented(
         return loss
     
     # Post-pooling layers: h1 and h2 have shape (B, hidden)
-    diff = h1 - h2
+    # Center by h1's batch mean for translation invariance
+    mean_h1 = h1.mean(dim=0)  # (hidden,)
+    h1_centered = h1 - mean_h1  # (B, hidden)
+    h2_centered = h2 - mean_h1  # (B, hidden)
+    
+    diff = h1_centered - h2_centered
     diff_sq = diff.pow(2).sum(dim=-1)  # (B,)
-    h1_sq = h1.pow(2).sum(dim=-1)  # (B,)
-    h2_sq = h2.pow(2).sum(dim=-1)  # (B,)
+    h1_sq = h1_centered.pow(2).sum(dim=-1)  # (B,)
+    h2_sq = h2_centered.pow(2).sum(dim=-1)  # (B,)
     
     per_sample_rel_loss = diff_sq / (h1_sq + h2_sq + eps)  # (B,)
     loss = per_sample_rel_loss.mean()
@@ -465,12 +476,17 @@ def relative_symmetry_loss(
         if mask is None:
             mask = torch.any(x != 0.0, dim=-1)  # (B, N)
         
+        # Center by h1's batch mean for translation invariance
+        # h1, h2: (B, N, hidden) -> mean over batch (dim=0) gives (N, hidden)
+        mean_h1 = h1.mean(dim=0)  # (N, hidden)
+        h1_centered = h1 - mean_h1  # (B, N, hidden)
+        h2_centered = h2 - mean_h1  # (B, N, hidden)
+        
         # Compute squared norms and differences per particle
-        # h1, h2: (B, N, hidden)
-        diff = h1 - h2
+        diff = h1_centered - h2_centered
         diff_sq = diff.pow(2).sum(dim=-1)  # (B, N)
-        h1_sq = h1.pow(2).sum(dim=-1)  # (B, N)
-        h2_sq = h2.pow(2).sum(dim=-1)  # (B, N)
+        h1_sq = h1_centered.pow(2).sum(dim=-1)  # (B, N)
+        h2_sq = h2_centered.pow(2).sum(dim=-1)  # (B, N)
         
         # Relative loss per particle: ||a-b||^2 / (||a||^2 + ||b||^2 + eps)
         per_particle_rel_loss = diff_sq / (h1_sq + h2_sq + eps)  # (B, N)
@@ -483,10 +499,15 @@ def relative_symmetry_loss(
         return loss
     
     # Post-pooling layers: h1 and h2 have shape (B, hidden)
-    diff = h1 - h2
+    # Center by h1's batch mean for translation invariance
+    mean_h1 = h1.mean(dim=0)  # (hidden,)
+    h1_centered = h1 - mean_h1  # (B, hidden)
+    h2_centered = h2 - mean_h1  # (B, hidden)
+    
+    diff = h1_centered - h2_centered
     diff_sq = diff.pow(2).sum(dim=-1)  # (B,)
-    h1_sq = h1.pow(2).sum(dim=-1)  # (B,)
-    h2_sq = h2.pow(2).sum(dim=-1)  # (B,)
+    h1_sq = h1_centered.pow(2).sum(dim=-1)  # (B,)
+    h2_sq = h2_centered.pow(2).sum(dim=-1)  # (B,)
     
     # Relative loss per sample
     per_sample_rel_loss = diff_sq / (h1_sq + h2_sq + eps)  # (B,)
