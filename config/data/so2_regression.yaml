@@ -1,0 +1,8 @@
+# SO(2)-invariant Gaussian regression dataset configuration
+# Points sampled uniformly from disk with full rotational symmetry
+# Target is exp(-(r-0.6)² / (2*0.08²)), a Gaussian function of radius
+
+n_samples: 1000       # Total number of samples
+r_min: 0.0            # Minimum radius
+r_max: 1.0            # Maximum radius
+train_split: 0.8      # 80% train, 20% val

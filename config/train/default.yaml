@@ -1,0 +1,18 @@
+# Training configuration
+
+# Optimization
+batch_size: 64
+total_steps: 10000
+learning_rate: 1.0e-4
+weight_decay: 0.0
+
+# Scheduler (optional cosine annealing)
+use_scheduler: true
+warmup_steps: 100
+
+# Logging
+log_interval: 100     # Log every N steps
+eval_interval: 500    # Evaluate on val set every N steps
+
+# Checkpointing
+save_best: true       # Save best model by val loss

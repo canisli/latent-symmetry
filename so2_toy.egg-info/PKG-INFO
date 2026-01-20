@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: so2-toy
+Version: 0.1.0
+Requires-Python: >=3.8
+Requires-Dist: torch>=2.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: hydra-core>=1.3.0
+Requires-Dist: omegaconf>=2.3.0
+Requires-Dist: matplotlib>=3.7.0
+Requires-Dist: tqdm>=4.65.0
