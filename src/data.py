@@ -48,23 +48,37 @@ def sample_uniform_disk(
     return x, y, r
 
 
-def gaussian_ring(
-    r: np.ndarray,
-    center: float = 0.6,
-    std: float = 0.08,
-) -> np.ndarray:
+def gaussian_ring(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
     """
-    Compute Gaussian scalar field: exp(-(r-center)² / (2*std²)).
+    SO(2)-invariant Gaussian ring: exp(-(r-0.6)² / (2*0.08²)).
     
     Args:
+        x: X coordinates (unused, for interface compatibility).
+        y: Y coordinates (unused, for interface compatibility).
         r: Array of radii.
-        center: Center of the Gaussian (default: 0.6).
-        std: Standard deviation of the Gaussian (default: 0.08).
     
     Returns:
         Array of Gaussian values.
     """
+    center, std = 0.6, 0.08
     return np.exp(-((r - center) ** 2) / (2 * std ** 2))
+
+
+def x_field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """
+    Non-invariant scalar field: f(x,y) = x.
+    
+    This is NOT SO(2)-invariant since rotation changes x.
+    
+    Args:
+        x: X coordinates.
+        y: Y coordinates (unused).
+        r: Array of radii (unused).
+    
+    Returns:
+        Array equal to x coordinates.
+    """
+    return x
 
 
 class ScalarFieldDataset(Dataset):
@@ -80,7 +94,7 @@ class ScalarFieldDataset(Dataset):
         n_samples: int = 1000,
         r_min: float = 0.0,
         r_max: float = 1.0,
-        scalar_field_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        scalar_field_fn: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]] = None,
         seed: Optional[int] = None,
     ):
         """
@@ -88,7 +102,7 @@ class ScalarFieldDataset(Dataset):
             n_samples: Total number of samples.
             r_min: Minimum radius.
             r_max: Maximum radius.
-            scalar_field_fn: Function that takes radius array and returns scalar field values.
+            scalar_field_fn: Function that takes (x, y, r) arrays and returns scalar field values.
                            Defaults to gaussian_ring.
             seed: Random seed for reproducibility.
         """
@@ -108,7 +122,7 @@ class ScalarFieldDataset(Dataset):
         x, y, r = sample_uniform_disk(n_samples, r_min, r_max, rng)
         
         # Compute scalar field target using the provided function
-        target = scalar_field_fn(r)
+        target = scalar_field_fn(x, y, r)
         
         # Store as tensors
         self.X = torch.tensor(np.stack([x, y], axis=1), dtype=torch.float32)
@@ -129,7 +143,7 @@ def create_dataloaders(
     n_samples: int = 1000,
     r_min: float = 0.0,
     r_max: float = 1.0,
-    scalar_field_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    scalar_field_fn: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]] = None,
     train_split: float = 0.8,
     batch_size: int = 64,
     seed: int = 42,
@@ -142,7 +156,7 @@ def create_dataloaders(
         n_samples: Total number of samples.
         r_min: Minimum radius.
         r_max: Maximum radius.
-        scalar_field_fn: Function that takes radius array and returns scalar field values.
+        scalar_field_fn: Function that takes (x, y, r) arrays and returns scalar field values.
                        Defaults to gaussian_ring.
         train_split: Fraction of data for training.
         batch_size: Batch size for dataloaders.
