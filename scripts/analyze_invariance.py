@@ -78,6 +78,7 @@ def run_experiment(cfg: DictConfig, scalar_field_fn, name: str, output_dir: Path
     plot_loss_curves(history, exp_dir / 'loss_curves.png')
     plot_regression_surface(model, full_dataset, exp_dir / 'regression_surface.png', device)
     plot_Q_vs_layer(Q_values, exp_dir / 'Q_vs_layer.png')
+    plt.close()
     
     return Q_values
 
