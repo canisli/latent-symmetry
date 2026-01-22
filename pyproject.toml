@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "so2-toy"
+name = "latsym"
 version = "0.1.0"
 requires-python = ">=3.8"
 dependencies = [
@@ -17,5 +17,5 @@ dependencies = [
 
 
 [tool.setuptools]
-package-dir = { so2toy = "src" }
-packages = ["so2toy"]
+package-dir = { latsym = "src" }
+packages = ["latsym", "latsym.groups", "latsym.metrics", "latsym.tasks"]

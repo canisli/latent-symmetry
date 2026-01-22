@@ -3,6 +3,7 @@ defaults:
   - data: so2_regression
   - model: mlp_8x128
   - train: default
+  - metrics: default
   - _self_
 
 # Experiment settings

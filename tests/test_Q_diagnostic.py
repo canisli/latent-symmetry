@@ -12,9 +12,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.so2 import rotate, sample_rotations
-from src.eval import compute_Q, compute_layer_statistics, get_pca_projection, project_activations
-from src.data import sample_uniform_disk
+from src.groups.so2 import rotate, sample_rotations
+from src.metrics.q_metric import compute_Q, compute_layer_statistics, get_pca_projection, project_activations
+from src.tasks.so2_regression import sample_uniform_disk
 from src.models import MLP
 
 

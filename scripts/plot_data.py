@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plot the scalar field dataset."""
 
-from so2toy.data import ScalarFieldDataset
+from latsym.tasks import ScalarFieldDataset
 import matplotlib.pyplot as plt
 
 dataset = ScalarFieldDataset(n_samples=1000, seed=42)

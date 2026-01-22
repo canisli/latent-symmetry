@@ -1,5 +1,7 @@
 """
 SO(2) group action for 2D rotations.
+
+SO(2) is the group of 2D rotations, parameterized by angle θ ∈ [0, 2π).
 """
 
 import torch
@@ -85,3 +87,8 @@ def rotation_matrix(theta: torch.Tensor) -> torch.Tensor:
         R[:, 1, 0] = sin_t
         R[:, 1, 1] = cos_t
         return R
+
+
+def identity(device=None) -> torch.Tensor:
+    """Return identity rotation (angle 0)."""
+    return torch.tensor(0.0, device=device)

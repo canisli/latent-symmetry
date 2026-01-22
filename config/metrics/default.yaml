@@ -1,0 +1,9 @@
+# Metrics configuration
+# Which metrics to compute and plot
+enabled:
+  - Q
+
+# Metric-specific parameters
+Q:
+  n_rotations: 32
+  explained_variance: 0.95

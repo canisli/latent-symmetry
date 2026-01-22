@@ -1,6 +1,6 @@
-# SO2 Toy
+# Latent Symmetry (latsym)
 
-Binary classification toy task for studying symmetry emergence in neural networks.
+Tools for studying symmetry emergence in neural network latent representations.
 
 ## Installation
 
@@ -10,48 +10,49 @@ Install the package in editable mode:
 pip install -e .
 ```
 
-Or install with development dependencies:
-
-```bash
-pip install -e ".[dev]"
-```
-
 ## Usage
 
-After installation, you can use the command-line scripts:
+Run the invariance analysis:
 
 ```bash
-# Train a model
-so2-toy-train
-
-# Plot the dataset
-so2-toy-plot-data
+python scripts/analyze_invariance.py
 ```
 
-Or use the scripts directly:
+Or use the library directly:
 
-```bash
-# Train
-python scripts/train.py
+```python
+from latsym.tasks import create_dataloaders, gaussian_ring
+from latsym.models import MLP
+from latsym.metrics import get_metric, list_metrics
 
-# Plot data
-python scripts/plot_data.py
+# List available metrics
+print(list_metrics())  # ['Q', ...]
+
+# Get a metric instance
+metric = get_metric("Q", n_rotations=32)
+
+# Compute and plot
+values = metric.compute(model, data, device=device)
+metric.plot(values, save_path="Q_vs_layer.png")
 ```
 
 ## Package Structure
 
-The package source files are in `src/`:
-- `src/data.py`: Dataset generation (TwoCloudDataset)
-- `src/models.py`: MLP model implementation
-- `src/train.py`: Training utilities
-- `src/eval.py`: Evaluation utilities (placeholder)
-- `src/scripts/`: Command-line scripts
-
-When installed, import as:
-```python
-from so2toy.data import TwoCloudDataset
-from so2toy.models import MLP
-from so2toy.train import train_loop
+```
+src/
+├── groups/           # Symmetry group implementations
+│   ├── so2.py        # SO(2) rotations
+│   ├── so3.py        # SO(3) rotations (stub)
+│   └── lorentz.py    # Lorentz group (stub)
+├── metrics/          # Invariance metrics
+│   ├── base.py       # Metric protocol
+│   ├── registry.py   # Auto-discovery
+│   └── q_metric.py   # Q orbit variance metric
+├── tasks/            # Experiment tasks
+│   └── so2_regression.py  # SO(2) scalar field regression
+├── models.py         # MLP model
+├── train.py          # Training utilities
+└── eval.py           # Visualization utilities
 ```
 
 ## Configuration

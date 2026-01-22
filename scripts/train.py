@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
-from so2toy.models import MLP
-from so2toy.data import create_dataloaders
-from so2toy.train import train_loop, create_scheduler, plot_loss_curves
-from so2toy.eval import plot_regression_surface
+from latsym.models import MLP
+from latsym.tasks import create_dataloaders
+from latsym.train import train_loop, create_scheduler, plot_loss_curves
+from latsym.eval import plot_regression_surface
 
 import hydra
 from omegaconf import DictConfig, OmegaConf

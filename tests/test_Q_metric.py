@@ -18,12 +18,12 @@ import os
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.so2 import rotate, sample_rotations, rotation_matrix
-from src.eval import (
+from src.groups.so2 import rotate, sample_rotations, rotation_matrix
+from src.metrics.q_metric import (
     compute_Q, compute_layer_statistics, get_pca_projection, 
     project_activations, compute_all_Q
 )
-from src.data import sample_uniform_disk
+from src.tasks.so2_regression import sample_uniform_disk
 
 
 class TestRotation:

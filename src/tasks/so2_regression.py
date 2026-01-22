@@ -1,8 +1,18 @@
 """
-Data generation for SO(2)-invariant scalar field regression task.
+SO(2) Regression Task: Scalar field prediction on a 2D disk.
 
-Points are sampled uniformly over a disk with full rotational symmetry.
-Target is computed using a scalar field function (e.g., Gaussian)."""
+This task tests whether networks learn SO(2)-invariant representations
+when the target function depends only on radius (invariant) vs. when
+it depends on the x-coordinate (non-invariant).
+
+Data:
+    - Points sampled uniformly from a disk/annulus
+    - Full SO(2) rotational symmetry in the sampling
+
+Target functions:
+    - gaussian_ring: f(x,y) = exp(-(r-0.6)²/(2*0.08²)) - SO(2) invariant
+    - x_field: f(x,y) = x - NOT SO(2) invariant
+"""
 
 import numpy as np
 import torch
@@ -83,10 +93,16 @@ def x_field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
 
 class ScalarFieldDataset(Dataset):
     """
-    SO(2)-invariant dataset for scalar field regression.
+    Dataset for scalar field regression on a 2D disk.
     
     Points are sampled uniformly from a disk with full rotational symmetry.
-    Target is computed using a scalar field function (e.g., Gaussian).
+    Target is computed using a scalar field function.
+    
+    Attributes:
+        X: Input coordinates of shape (n_samples, 2).
+        y: Target values of shape (n_samples, 1).
+        r_min, r_max: Radius bounds.
+        scalar_field_fn: The target function used.
     """
     
     def __init__(
@@ -204,5 +220,3 @@ def create_dataloaders(
     )
     
     return train_loader, val_loader, dataset
-
-
