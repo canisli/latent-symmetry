@@ -11,7 +11,7 @@ from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface, plot_run_summary
 from latsym.metrics import get_metric, list_metrics
-from latsym.metrics.q_metric import compute_oracle_Q
+from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_h_vs_layer
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -124,6 +124,11 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         metric = get_metric("Q", **metric_cfg)
         Q_values = metric.compute(model, X, device=device)
         
+        # Compute Q_h metric (raw activations, no PCA)
+        metric_h_cfg = OmegaConf.to_container(cfg.metrics.get("Q_h", {}), resolve=True)
+        metric_h = get_metric("Q_h", **metric_h_cfg)
+        Q_h_values = metric_h.compute(model, X, device=device)
+        
         # Compute oracle Q
         oracle_Q = compute_oracle_Q(X, y, scalar_field_fn, n_rotations=32, device=device)
         
@@ -131,16 +136,22 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         print(f"  Q values by layer:")
         for layer, val in Q_values.items():
             print(f"    {layer}: Q = {val:.4f}")
+        print(f"  Q_h values by layer:")
+        for layer, val in Q_h_values.items():
+            print(f"    {layer}: Q_h = {val:.4f}")
         
         # Save artifacts if output_dir provided
         if not use_temp:
             # Save metric values
-            all_metric_values = {"Q": Q_values}
+            all_metric_values = {"Q": Q_values, "Q_h": Q_h_values}
             with open(save_dir / 'metric_values.json', 'w') as f:
                 json.dump(all_metric_values, f, indent=2)
             
             # Save Q plot
             plot_Q_vs_layer(Q_values, save_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q, run_name=name)
+            
+            # Save Q_h plot (not included in summary)
+            plot_Q_h_vs_layer(Q_h_values, save_dir / 'Q_h_vs_layer.png', run_name=name)
             
             # Save loss curves if we trained
             if cfg.train.total_steps > 0:
@@ -149,7 +160,7 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             # Save regression surface
             plot_regression_surface(model, full_dataset, save_dir / 'regression_surface.png', device)
             
-            # Save combined summary plot
+            # Save combined summary plot (Q_h is excluded - only Q is shown)
             plot_run_summary(
                 history, Q_values, oracle_Q, model, full_dataset, device,
                 save_dir / 'summary.png', run_name=name
@@ -157,7 +168,7 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             
             plt.close('all')
         
-        return Q_values, oracle_Q, history
+        return Q_values, oracle_Q, Q_h_values, history
         
     finally:
         if temp_ctx is not None:
@@ -228,7 +239,7 @@ def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
         run_dir = output_dir / run_name
         
         # Run the experiment
-        Q_values, oracle_Q, history = run_single_field(
+        Q_values, oracle_Q, Q_h_values, history = run_single_field(
             run_cfg, field_fn, device, 
             output_dir=run_dir, 
             name=run_name

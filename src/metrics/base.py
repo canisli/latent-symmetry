@@ -73,6 +73,7 @@ class BaseMetric:
     """
     
     name: str = "base"
+    include_in_summary: bool = True  # Whether to include in summary plots
     
     def __init__(self, **kwargs):
         """Store any metric-specific parameters."""
