@@ -10,11 +10,12 @@ defaults:
 experiment:
   name: "so2_radius_regression"
   seed: 42
+  runs_file: "config/runs/default.yaml"  # YAML file specifying batch runs
   
 # Output directory (Hydra will set this)
 hydra:
   run:
-    dir: experiments/${now:%Y-%m-%d_%H-%M-%S}
+    dir: experiments/${now:%Y-%m-%d}
   sweep:
-    dir: experiments/sweeps/${now:%Y-%m-%d_%H-%M-%S}
+    dir: experiments/sweeps/${now:%Y-%m-%d}
     subdir: ${hydra.job.num}

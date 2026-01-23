@@ -1,0 +1,22 @@
+# Quick batch runs for fast iteration
+# Uses fewer training steps for rapid prototyping
+
+runs:
+  - name: gaussian_quick
+    field: gaussian_ring
+    train:
+      total_steps: 1000
+
+  - name: fourier_k2_quick
+    field: fourier
+    field_args:
+      k: 2
+    train:
+      total_steps: 1000
+
+  - name: mix_0.5_quick
+    field: mix
+    field_args:
+      alpha: 0.5
+    train:
+      total_steps: 1000

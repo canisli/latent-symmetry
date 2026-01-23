@@ -217,28 +217,106 @@ def compute_all_Q(
     return Q_values
 
 
-def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None):
+def compute_oracle_Q(
+    data: torch.Tensor,
+    targets: torch.Tensor,
+    scalar_field_fn,
+    n_rotations: int = 32,
+    device: torch.device = None,
+) -> float:
+    """
+    Compute Q for the oracle (perfect predictor where ŷ = y).
+    
+    This evaluates what Q would be at the output if the model perfectly
+    predicted the true labels. For invariant targets, oracle Q ≈ 0.
+    For non-invariant targets, oracle Q ≈ 1.
+    
+    Args:
+        data: Input data tensor of shape (N, 2).
+        targets: True target values of shape (N, 1).
+        scalar_field_fn: Function (x, y, r) -> target used to compute labels for rotated points.
+        n_rotations: Number of rotation pairs to sample.
+        device: Torch device.
+    
+    Returns:
+        Oracle Q value.
+    """
+    import numpy as np
+    
+    if device is None:
+        device = torch.device('cpu')
+    
+    data = data.to(device)
+    targets = targets.to(device)
+    N = data.shape[0]
+    
+    # Denominator: E[||y - y'||²] using all pairs
+    y = targets
+    y_diff = y.unsqueeze(0) - y.unsqueeze(1)  # (N, N, 1)
+    y_diff_sq = (y_diff ** 2).sum(dim=-1)  # (N, N)
+    mask = ~torch.eye(N, dtype=torch.bool, device=device)
+    denominator = y_diff_sq[mask].mean()
+    
+    if denominator < 1e-10:
+        # All targets are the same, Q is undefined
+        return 0.0
+    
+    # Numerator: E[||y(g1*x) - y(g2*x)||²]
+    numerator = 0.0
+    for _ in range(n_rotations):
+        theta1 = sample_rotations(N, device=device)
+        theta2 = sample_rotations(N, device=device)
+        
+        x_rot1 = rotate(data, theta1)
+        x_rot2 = rotate(data, theta2)
+        
+        # Compute true labels for rotated points
+        x1_np, y1_np = x_rot1[:, 0].cpu().numpy(), x_rot1[:, 1].cpu().numpy()
+        x2_np, y2_np = x_rot2[:, 0].cpu().numpy(), x_rot2[:, 1].cpu().numpy()
+        r1 = np.sqrt(x1_np**2 + y1_np**2)
+        r2 = np.sqrt(x2_np**2 + y2_np**2)
+        
+        y_rot1 = torch.tensor(scalar_field_fn(x1_np, y1_np, r1), dtype=torch.float32, device=device).unsqueeze(1)
+        y_rot2 = torch.tensor(scalar_field_fn(x2_np, y2_np, r2), dtype=torch.float32, device=device).unsqueeze(1)
+        
+        numerator += ((y_rot1 - y_rot2) ** 2).sum(dim=-1).mean()
+    
+    numerator /= n_rotations
+    
+    Q = (numerator / denominator).item()
+    return Q
+
+
+def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None, oracle_Q: float = None):
     """
     Plot Q as a function of layer depth.
     
     Args:
         Q_values: Dictionary mapping layer names to Q values.
         save_path: Optional path to save the plot.
+        oracle_Q: Optional oracle Q value to show as a bar next to output.
     """
     layers = list(Q_values.keys())
     values = list(Q_values.values())
     
+    # Add oracle bar if provided
+    if oracle_Q is not None:
+        layers = layers + ['oracle']
+        values = values + [oracle_Q]
+    
     fig, ax = plt.subplots(figsize=(8, 5))
     x = range(len(layers))
-    ax.bar(x, values, color='steelblue', edgecolor='black')
+    
+    # Color bars: steelblue for model layers, green for oracle
+    colors = ['steelblue'] * (len(layers) - 1) + ['green'] if oracle_Q is not None else ['steelblue'] * len(layers)
+    
+    ax.bar(x, values, color=colors, edgecolor='black')
     ax.set_xticks(x)
     ax.set_xticklabels(layers, rotation=45, ha='right')
     ax.set_xlabel('Layer')
     ax.set_ylabel('Q (Orbit Variance)')
     ax.set_title('SO(2) Invariance Metric by Layer')
     ax.set_ylim(bottom=0)
-    ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, label='Q=1 (no invariance)')
-    ax.legend()
     ax.grid(axis='y', alpha=0.3)
     
     plt.tight_layout()
@@ -288,5 +366,6 @@ class QMetric(BaseMetric):
         save_path: Path = None,
         **kwargs
     ) -> None:
-        """Plot Q values with reference line at Q=1."""
-        plot_Q_vs_layer(values, save_path)
+        """Plot Q values with optional oracle reference line."""
+        oracle_Q = kwargs.get('oracle_Q', None)
+        plot_Q_vs_layer(values, save_path, oracle_Q=oracle_Q)

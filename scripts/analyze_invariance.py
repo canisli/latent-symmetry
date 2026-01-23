@@ -7,10 +7,11 @@ and plots selected symmetry metrics for each layer.
 """
 
 from latsym.models import MLP
-from latsym.tasks import create_dataloaders, gaussian_ring, x_field
+from latsym.tasks import create_dataloaders, gaussian_ring, x_field, fourier, mix
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface
 from latsym.metrics import get_metric, list_metrics
+from latsym.metrics.q_metric import compute_oracle_Q
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -20,6 +21,41 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 import json
+import os
+from typing import Callable, Optional
+
+
+def get_field_fn(field_name: str, field_args: dict = None) -> Callable:
+    """
+    Get a scalar field function by name.
+    
+    Args:
+        field_name: One of 'gaussian_ring', 'x_field', 'fourier', 'mix'
+        field_args: Optional dict of arguments for parameterized fields:
+                   - fourier: {'k': int} (frequency)
+                   - mix: {'alpha': float} (mixing parameter 0-1)
+    
+    Returns:
+        Scalar field function with signature (x, y, r) -> values
+    
+    Raises:
+        ValueError: If field_name is unknown
+    """
+    field_args = field_args or {}
+    
+    if field_name == "gaussian_ring":
+        return gaussian_ring
+    elif field_name == "x_field":
+        return x_field
+    elif field_name == "fourier":
+        k = field_args.get("k", 2)
+        return fourier(k=k)
+    elif field_name == "mix":
+        alpha = field_args.get("alpha", 0.5)
+        return mix(alpha=alpha)
+    else:
+        raise ValueError(f"Unknown field: {field_name}. "
+                        f"Available: gaussian_ring, x_field, fourier, mix")
 
 
 def build_model(cfg: DictConfig) -> nn.Module:
@@ -28,14 +64,28 @@ def build_model(cfg: DictConfig) -> nn.Module:
     return MLP(dims=dims, act=act_map.get(cfg.activation, nn.ReLU))
 
 
-def run_experiment(cfg: DictConfig, scalar_field_fn, name: str, output_dir: Path, device: torch.device):
-    """Run a single experiment with the given scalar field."""
-    print(f"\n{'='*60}")
-    print(f"Running experiment: {name}")
-    print(f"{'='*60}")
+def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
+                     output_dir: Path = None, name: str = None):
+    """
+    Train on a single field and return Q values + oracle Q.
     
-    exp_dir = output_dir / name
-    exp_dir.mkdir(parents=True, exist_ok=True)
+    Args:
+        cfg: Hydra config with data, model, train, metrics sections
+        scalar_field_fn: Function (x, y, r) -> scalar field values
+        device: torch device
+        output_dir: If provided, save all artifacts here. If None, use temp directory.
+        name: Run name for logging (optional)
+    
+    Returns:
+        Tuple of (Q_values dict, oracle_Q float, history dict)
+    """
+    import tempfile
+    from latsym.metrics.q_metric import plot_Q_vs_layer
+    
+    if name:
+        print(f"\n{'='*60}")
+        print(f"Running: {name}")
+        print(f"{'='*60}")
     
     seed = cfg.experiment.seed
     torch.manual_seed(seed)
@@ -56,84 +106,172 @@ def run_experiment(cfg: DictConfig, scalar_field_fn, name: str, output_dir: Path
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)
     scheduler = create_scheduler(optimizer, cfg.train.total_steps, cfg.train.warmup_steps) if cfg.train.use_scheduler else None
     
-    history = train_loop(
-        model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
-        cfg.train.total_steps, cfg.train.log_interval, cfg.train.eval_interval,
-        exp_dir, cfg.train.save_best,
-    )
+    # Use output_dir if provided, otherwise temp directory
+    use_temp = output_dir is None
+    if use_temp:
+        temp_ctx = tempfile.TemporaryDirectory()
+        save_dir = Path(temp_ctx.__enter__())
+    else:
+        temp_ctx = None
+        save_dir = Path(output_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"Final Train MSE: {history['train_loss'][-1]:.6f}")
-    print(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
-    print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
-    
-    best_model_path = exp_dir / 'model_best.pt'
-    if best_model_path.exists():
-        model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
-    
-    # Get full dataset as tensor
-    X, _ = full_dataset.get_numpy()
-    X = torch.tensor(X, dtype=torch.float32)
-    
-    # Compute all enabled metrics
-    all_metric_values = {}
-    
-    for metric_name in cfg.metrics.enabled:
-        print(f"\nComputing {metric_name} metric...")
+    try:
+        history = train_loop(
+            model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
+            cfg.train.total_steps, cfg.train.log_interval, cfg.train.eval_interval,
+            save_dir, cfg.train.save_best,
+        )
         
-        # Get metric-specific config
-        metric_cfg = OmegaConf.to_container(cfg.metrics.get(metric_name, {}), resolve=True)
-        metric = get_metric(metric_name, **metric_cfg)
+        print(f"Final Train MSE: {history['train_loss'][-1]:.6f}")
+        print(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
+        print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
         
-        # Compute metric
-        values = metric.compute(model, X, device=device)
-        all_metric_values[metric_name] = values
+        best_model_path = save_dir / 'model_best.pt'
+        if best_model_path.exists():
+            model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
         
-        # Print values
-        print(f"\n{metric_name} values by layer:")
-        for layer, val in values.items():
-            print(f"  {layer}: {metric_name} = {val:.4f}")
+        # Get full dataset as tensor
+        X, y = full_dataset.get_numpy()
+        X = torch.tensor(X, dtype=torch.float32)
+        y = torch.tensor(y, dtype=torch.float32).unsqueeze(1) if y.ndim == 1 else torch.tensor(y, dtype=torch.float32)
         
-        # Plot
-        metric.plot(values, exp_dir / f'{metric_name}_vs_layer.png')
-    
-    # Save all metric values to JSON
-    with open(exp_dir / 'metric_values.json', 'w') as f:
-        json.dump(all_metric_values, f, indent=2)
-    
-    # Plot standard visualizations
-    plot_loss_curves(history, exp_dir / 'loss_curves.png')
-    plot_regression_surface(model, full_dataset, exp_dir / 'regression_surface.png', device)
-    plt.close('all')
-    
-    return all_metric_values
+        # Compute Q metric
+        metric_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
+        metric = get_metric("Q", **metric_cfg)
+        Q_values = metric.compute(model, X, device=device)
+        
+        # Compute oracle Q
+        oracle_Q = compute_oracle_Q(X, y, scalar_field_fn, n_rotations=32, device=device)
+        
+        print(f"  Oracle Q = {oracle_Q:.4f}")
+        print(f"  Q values by layer:")
+        for layer, val in Q_values.items():
+            print(f"    {layer}: Q = {val:.4f}")
+        
+        # Save artifacts if output_dir provided
+        if not use_temp:
+            # Save metric values
+            all_metric_values = {"Q": Q_values}
+            with open(save_dir / 'metric_values.json', 'w') as f:
+                json.dump(all_metric_values, f, indent=2)
+            
+            # Save Q plot
+            plot_Q_vs_layer(Q_values, save_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q)
+            
+            # Save loss curves
+            plot_loss_curves(history, save_dir / 'loss_curves.png')
+            
+            # Save regression surface
+            plot_regression_surface(model, full_dataset, save_dir / 'regression_surface.png', device)
+            
+            plt.close('all')
+        
+        return Q_values, oracle_Q, history
+        
+    finally:
+        if temp_ctx is not None:
+            temp_ctx.__exit__(None, None, None)
 
 
-def plot_metric_comparison(metric_values_inv, metric_values_noninv, metric_name, save_path):
-    """Plot comparison of a metric between invariant and non-invariant models."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
+    """
+    Run experiments specified in a YAML file.
     
-    for ax, (values, title) in zip(axes, [
-        (metric_values_inv, "Invariant (Gaussian Ring)"),
-        (metric_values_noninv, "Non-invariant (x)")
-    ]):
-        layers = list(values.keys())
-        vals = list(values.values())
-        x = range(len(layers))
-        ax.bar(x, vals, color='steelblue', edgecolor='black')
-        ax.set_xticks(x)
-        ax.set_xticklabels(layers, rotation=45, ha='right')
-        ax.set_xlabel('Layer')
-        ax.set_ylabel(f'{metric_name}')
-        ax.set_title(title)
-        ax.set_ylim(bottom=0)
-        if metric_name == "Q":
-            ax.axhline(y=1.0, color='red', linestyle='--', alpha=0.5, label=f'{metric_name}=1')
-            ax.legend()
-        ax.grid(axis='y', alpha=0.3)
+    Each run can specify:
+        - name: Run name (used for folder and aggregated files)
+        - field: Field type (gaussian_ring, x_field, fourier, mix)
+        - field_args: Optional args for parameterized fields (k, alpha)
+        - model: Optional model config overrides (num_layers, hidden_dim, etc.)
+        - train: Optional training config overrides (total_steps, learning_rate, etc.)
+        - data: Optional data config overrides (n_samples, etc.)
+    """
+    import yaml
     
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close()
+    # Load runs specification
+    runs_file = cfg.experiment.get("runs_file", "config/runs/default.yaml")
+    runs_path = Path(runs_file)
+    
+    if not runs_path.exists():
+        # Try relative to workspace root
+        runs_path = Path(hydra.utils.get_original_cwd()) / runs_file
+    
+    if not runs_path.exists():
+        raise FileNotFoundError(f"Runs file not found: {runs_file}")
+    
+    print(f"Loading runs from: {runs_path}")
+    
+    with open(runs_path, 'r') as f:
+        runs_config = yaml.safe_load(f)
+    
+    runs = runs_config.get('runs', [])
+    print(f"Found {len(runs)} run(s) to execute\n")
+    
+    # Track Q plots for aggregation
+    q_plot_sources = []
+    
+    for run_spec in runs:
+        run_name = run_spec.get('name', 'unnamed')
+        field_name = run_spec.get('field', 'gaussian_ring')
+        field_args = run_spec.get('field_args', {})
+        
+        # Get the field function
+        field_fn = get_field_fn(field_name, field_args)
+        
+        # Create merged config with run-specific overrides
+        run_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        
+        # Apply model overrides
+        if 'model' in run_spec:
+            for key, value in run_spec['model'].items():
+                run_cfg.model[key] = value
+        
+        # Apply train overrides
+        if 'train' in run_spec:
+            for key, value in run_spec['train'].items():
+                run_cfg.train[key] = value
+        
+        # Apply data overrides
+        if 'data' in run_spec:
+            for key, value in run_spec['data'].items():
+                run_cfg.data[key] = value
+        
+        # Create run output directory
+        run_dir = output_dir / run_name
+        
+        # Run the experiment
+        Q_values, oracle_Q, history = run_single_field(
+            run_cfg, field_fn, device, 
+            output_dir=run_dir, 
+            name=run_name
+        )
+        
+        # Track for aggregation
+        q_plot_src = run_dir / 'Q_vs_layer.png'
+        if q_plot_src.exists():
+            q_plot_sources.append((run_name, q_plot_src))
+    
+    # Create hard links for Q plots in root directory
+    print(f"\n{'='*60}")
+    print("Aggregating Q plots to root directory")
+    print("="*60)
+    
+    for run_name, src_path in q_plot_sources:
+        dest_path = output_dir / f"{run_name}_Q_vs_layer.png"
+        try:
+            # Remove existing link/file if present
+            if dest_path.exists():
+                dest_path.unlink()
+            # Create hard link
+            os.link(src_path, dest_path)
+            print(f"  Linked: {dest_path.name}")
+        except OSError as e:
+            # Fall back to copy if hard link fails (e.g., cross-device)
+            import shutil
+            shutil.copy2(src_path, dest_path)
+            print(f"  Copied: {dest_path.name} (hard link failed: {e})")
+    
+    print(f"\nAll results saved to: {output_dir}")
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="config")
@@ -145,19 +283,7 @@ def main(cfg: DictConfig):
     output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Run both experiments
-    metrics_inv = run_experiment(cfg, gaussian_ring, "inv", output_dir, device)
-    metrics_noninv = run_experiment(cfg, x_field, "noninv", output_dir, device)
-    
-    # Plot comparison for each metric
-    for metric_name in cfg.metrics.enabled:
-        if metric_name in metrics_inv and metric_name in metrics_noninv:
-            plot_metric_comparison(
-                metrics_inv[metric_name],
-                metrics_noninv[metric_name],
-                metric_name,
-                output_dir / f'{metric_name}_comparison.png'
-            )
+    run_batch_mode(cfg, output_dir, device)
     
     print(f"\nResults saved to: {output_dir}")
 

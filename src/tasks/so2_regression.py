@@ -3,7 +3,7 @@ SO(2) Regression Task: Scalar field prediction on a 2D disk.
 
 This task tests whether networks learn SO(2)-invariant representations
 when the target function depends only on radius (invariant) vs. when
-it depends on the x-coordinate (non-invariant).
+it depends on angle (non-invariant).
 
 Data:
     - Points sampled uniformly from a disk/annulus
@@ -12,6 +12,8 @@ Data:
 Target functions:
     - gaussian_ring: f(x,y) = exp(-(r-0.6)²/(2*0.08²)) - SO(2) invariant
     - x_field: f(x,y) = x - NOT SO(2) invariant
+    - fourier(k): f(x,y) = cos(k*θ) - NOT SO(2) invariant (Fourier mode)
+    - mix(α): f(x,y) = (1-α)*gaussian_ring + α*fourier(k=2) - interpolates invariance
 """
 
 import numpy as np
@@ -89,6 +91,58 @@ def x_field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
         Array equal to x coordinates.
     """
     return x
+
+
+def fourier(k: int = 1):
+    """
+    Create a Fourier mode scalar field: f(x,y) = cos(k*θ).
+    
+    This is NOT SO(2)-invariant for k != 0 since rotation by angle φ 
+    transforms cos(kθ) → cos(k(θ+φ)) = cos(kθ + kφ).
+    
+    For k=1: cos(θ) = x/r (equivalent to x_field normalized by radius)
+    For k=2: cos(2θ) = (x² - y²)/r² (quadrupole pattern)
+    
+    Args:
+        k: Fourier mode number (frequency).
+    
+    Returns:
+        Scalar field function with signature (x, y, r) -> values.
+    """
+    def field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        theta = np.arctan2(y, x)
+        return np.cos(k * theta)
+    
+    field.__name__ = f"fourier_k{k}"
+    field.__doc__ = f"Fourier mode k={k}: cos({k}θ)"
+    return field
+
+
+def mix(alpha: float = 0.5):
+    """
+    Create a mixed scalar field: f(x,y) = (1-α) * gaussian_ring + α * fourier(k=2).
+    
+    This interpolates between a fully SO(2)-invariant field (α=0) and 
+    a non-invariant Fourier mode (α=1).
+    
+    Args:
+        alpha: Mixing parameter in [0, 1].
+               α=0: pure gaussian_ring (invariant)
+               α=1: pure fourier(k=2) (non-invariant)
+    
+    Returns:
+        Scalar field function with signature (x, y, r) -> values.
+    """
+    fourier_k2 = fourier(k=2)
+    
+    def field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        inv_part = gaussian_ring(x, y, r)
+        noninv_part = fourier_k2(x, y, r)
+        return (1 - alpha) * inv_part + alpha * noninv_part
+    
+    field.__name__ = f"mix_alpha{alpha}"
+    field.__doc__ = f"Mixed field: (1-{alpha})*gaussian_ring + {alpha}*cos(2θ)"
+    return field
 
 
 class ScalarFieldDataset(Dataset):

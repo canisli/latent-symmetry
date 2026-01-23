@@ -1,0 +1,34 @@
+# Default batch runs configuration
+# Each run specifies a field and optional overrides for model/train/data config
+
+runs:
+  # Invariant field - Gaussian ring (depends only on radius)
+  - name: gaussian_ring
+    field: gaussian_ring
+
+  # Non-invariant fields - Fourier modes (depend on angle)
+  - name: fourier_k1
+    field: fourier
+    field_args:
+      k: 1
+
+  - name: fourier_k2
+    field: fourier
+    field_args:
+      k: 2
+
+  # Mixed field - interpolates between invariant and non-invariant
+  - name: mix_0.0
+    field: mix
+    field_args:
+      alpha: 0.0  # Pure invariant
+
+  - name: mix_0.5
+    field: mix
+    field_args:
+      alpha: 0.5  # Half-half
+
+  - name: mix_1.0
+    field: mix
+    field_args:
+      alpha: 1.0  # Pure non-invariant

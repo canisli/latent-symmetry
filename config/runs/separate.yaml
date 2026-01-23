@@ -1,0 +1,11 @@
+# Separate mode: invariant vs non-invariant comparison
+# Equivalent to the old "separate" mode
+
+runs:
+  - name: inv
+    field: gaussian_ring
+
+  - name: noninv
+    field: fourier
+    field_args:
+      k: 2

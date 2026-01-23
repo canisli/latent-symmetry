@@ -1,0 +1,83 @@
+# Benchmark mode: all standard fields
+# Equivalent to the old "benchmark" mode
+
+runs:
+  # Invariant field
+  - name: gaussian_ring
+    field: gaussian_ring
+
+  # Non-invariant x field
+  - name: x_field
+    field: x_field
+
+  # Fourier modes
+  - name: cos1θ
+    field: fourier
+    field_args:
+      k: 1
+
+  - name: cos2θ
+    field: fourier
+    field_args:
+      k: 2
+
+  - name: cos4θ
+    field: fourier
+    field_args:
+      k: 4
+
+  # Mixing fields - full sweep
+  - name: mix_α=0.0
+    field: mix
+    field_args:
+      alpha: 0.0
+
+  - name: mix_α=0.1
+    field: mix
+    field_args:
+      alpha: 0.1
+
+  - name: mix_α=0.2
+    field: mix
+    field_args:
+      alpha: 0.2
+
+  - name: mix_α=0.3
+    field: mix
+    field_args:
+      alpha: 0.3
+
+  - name: mix_α=0.4
+    field: mix
+    field_args:
+      alpha: 0.4
+
+  - name: mix_α=0.5
+    field: mix
+    field_args:
+      alpha: 0.5
+
+  - name: mix_α=0.6
+    field: mix
+    field_args:
+      alpha: 0.6
+
+  - name: mix_α=0.7
+    field: mix
+    field_args:
+      alpha: 0.7
+
+  - name: mix_α=0.8
+    field: mix
+    field_args:
+      alpha: 0.8
+
+  - name: mix_α=0.9
+    field: mix
+    field_args:
+      alpha: 0.9
+
+  - name: mix_α=1.0
+    field: mix
+    field_args:
+      alpha: 1.0

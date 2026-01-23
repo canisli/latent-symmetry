@@ -1,0 +1,23 @@
+# Mixing mode: interpolate between invariant and non-invariant
+# Equivalent to the old "mixing" mode
+
+runs:
+  - name: alpha_0_0
+    field: mix
+    field_args:
+      alpha: 0.0
+
+  - name: alpha_0_1
+    field: mix
+    field_args:
+      alpha: 0.1
+
+  - name: alpha_0_5
+    field: mix
+    field_args:
+      alpha: 0.5
+
+  - name: alpha_1_0
+    field: mix
+    field_args:
+      alpha: 1.0

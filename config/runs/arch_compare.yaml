@@ -1,0 +1,22 @@
+# Architecture comparison runs
+# Compare different network depths on the same field
+
+runs:
+
+  - name: gaussian_4x64
+    field: gaussian_ring
+    model:
+      num_layers: 4
+      hidden_dim: 64
+
+  - name: gaussian_8x64
+    field: gaussian_ring
+    model:
+      num_layers: 8
+      hidden_dim: 64
+
+  - name: gaussian_12x64
+    field: gaussian_ring
+    model:
+      num_layers: 12
+      hidden_dim: 64

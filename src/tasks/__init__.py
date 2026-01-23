@@ -12,6 +12,8 @@ from .so2_regression import (
     sample_uniform_disk,
     gaussian_ring,
     x_field,
+    fourier,
+    mix,
     ScalarFieldDataset,
     create_dataloaders,
 )
@@ -20,6 +22,8 @@ __all__ = [
     "sample_uniform_disk",
     "gaussian_ring",
     "x_field",
+    "fourier",
+    "mix",
     "ScalarFieldDataset",
     "create_dataloaders",
 ]
