@@ -15,7 +15,7 @@ experiment:
 # Output directory (Hydra will set this)
 hydra:
   run:
-    dir: experiments/${now:%Y-%m-%d}
+    dir: experiments/${now:%Y-%m-%d_%H-%M-%S}
   sweep:
-    dir: experiments/sweeps/${now:%Y-%m-%d}
+    dir: experiments/sweeps/${now:%Y-%m-%d_%H-%M-%S}
     subdir: ${hydra.job.num}

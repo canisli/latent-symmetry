@@ -287,7 +287,7 @@ def compute_oracle_Q(
     return Q
 
 
-def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None, oracle_Q: float = None):
+def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None, oracle_Q: float = None, run_name: str = None):
     """
     Plot Q as a function of layer depth.
     
@@ -295,6 +295,7 @@ def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None, oracle_Q
         Q_values: Dictionary mapping layer names to Q values.
         save_path: Optional path to save the plot.
         oracle_Q: Optional oracle Q value to show as a bar next to output.
+        run_name: Optional run name to include in the title.
     """
     layers = list(Q_values.keys())
     values = list(Q_values.values())
@@ -304,22 +305,41 @@ def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None, oracle_Q
         layers = layers + ['oracle']
         values = values + [oracle_Q]
     
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     x = range(len(layers))
     
     # Color bars: steelblue for model layers, green for oracle
     colors = ['steelblue'] * (len(layers) - 1) + ['green'] if oracle_Q is not None else ['steelblue'] * len(layers)
     
-    ax.bar(x, values, color=colors, edgecolor='black')
-    ax.set_xticks(x)
-    ax.set_xticklabels(layers, rotation=45, ha='right')
-    ax.set_xlabel('Layer')
-    ax.set_ylabel('Q (Orbit Variance)')
-    ax.set_title('SO(2) Invariance Metric by Layer')
-    ax.set_ylim(bottom=0)
-    ax.grid(axis='y', alpha=0.3)
+    # Left: linear scale
+    axes[0].bar(x, values, color=colors, edgecolor='black')
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(layers, rotation=45, ha='right')
+    axes[0].set_xlabel('Layer')
+    axes[0].set_ylabel('Q (Orbit Variance)')
+    axes[0].set_ylim(bottom=0)
+    axes[0].grid(axis='y', alpha=0.3)
+    axes[0].set_title('Linear')
+    
+    # Right: log scale
+    eps = 1e-6
+    log_values = [max(v, eps) for v in values]
+    axes[1].bar(x, log_values, color=colors, edgecolor='black')
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(layers, rotation=45, ha='right')
+    axes[1].set_xlabel('Layer')
+    axes[1].set_yscale('log')
+    axes[1].grid(axis='y', alpha=0.3)
+    axes[1].set_title('Log')
+    
+    # Set overall title with run name if provided
+    title = 'SO(2) Invariance Metric by Layer'
+    if run_name:
+        title = f'{run_name}: {title}'
+    fig.suptitle(title)
     
     plt.tight_layout()
+    fig.subplots_adjust(top=0.88)
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
@@ -368,4 +388,5 @@ class QMetric(BaseMetric):
     ) -> None:
         """Plot Q values with optional oracle reference line."""
         oracle_Q = kwargs.get('oracle_Q', None)
-        plot_Q_vs_layer(values, save_path, oracle_Q=oracle_Q)
+        run_name = kwargs.get('run_name', None)
+        plot_Q_vs_layer(values, save_path, oracle_Q=oracle_Q, run_name=run_name)

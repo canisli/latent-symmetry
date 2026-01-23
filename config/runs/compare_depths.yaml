@@ -1,0 +1,39 @@
+# Architecture comparison runs
+# Compare different network depths on the same field
+
+runs:
+  - name: gaussian_4x64
+    field:
+      _target_: latsym.tasks.GaussianRing
+    model:
+      num_layers: 4
+      hidden_dim: 64
+
+  - name: gaussian_8x64
+    field:
+      _target_: latsym.tasks.GaussianRing
+    model:
+      num_layers: 8
+      hidden_dim: 64
+
+  - name: gaussian_12x64
+    field:
+      _target_: latsym.tasks.GaussianRing
+    model:
+      num_layers: 12
+      hidden_dim: 64
+
+
+  - name: gaussian_16x64
+    field:
+      _target_: latsym.tasks.GaussianRing
+    model:
+      num_layers: 16
+      hidden_dim: 64
+
+  - name: gaussian_20x64
+    field:
+      _target_: latsym.tasks.GaussianRing
+    model:
+      num_layers: 20
+      hidden_dim: 64

@@ -8,18 +8,32 @@ it depends on angle (non-invariant).
 Data:
     - Points sampled uniformly from a disk/annulus
     - Full SO(2) rotational symmetry in the sampling
-
-Target functions:
-    - gaussian_ring: f(x,y) = exp(-(r-0.6)²/(2*0.08²)) - SO(2) invariant
-    - x_field: f(x,y) = x - NOT SO(2) invariant
-    - fourier(k): f(x,y) = cos(k*θ) - NOT SO(2) invariant (Fourier mode)
-    - mix(α): f(x,y) = (1-α)*gaussian_ring + α*fourier(k=2) - interpolates invariance
 """
 
 import numpy as np
 import torch
+from abc import ABC, abstractmethod
 from torch.utils.data import Dataset, DataLoader, random_split
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional
+
+
+class Field(ABC):
+    """Abstract base class for scalar fields on a 2D disk."""
+    
+    @abstractmethod
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        """
+        Evaluate the scalar field at given points.
+        
+        Args:
+            x: X coordinates array.
+            y: Y coordinates array.
+            r: Radii array.
+        
+        Returns:
+            Scalar field values at each point.
+        """
+        pass
 
 
 def sample_uniform_disk(
@@ -60,89 +74,195 @@ def sample_uniform_disk(
     return x, y, r
 
 
-def gaussian_ring(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
-    """
-    SO(2)-invariant Gaussian ring: exp(-(r-0.6)² / (2*0.08²)).
+class GaussianRing(Field):
+    """SO(2)-invariant Gaussian ring field: exp(-(r-center)²/(2*std²))."""
     
-    Args:
-        x: X coordinates (unused, for interface compatibility).
-        y: Y coordinates (unused, for interface compatibility).
-        r: Array of radii.
+    def __init__(self, center: float = 0.6, std: float = 0.08):
+        self.center = center
+        self.std = std
     
-    Returns:
-        Array of Gaussian values.
-    """
-    center, std = 0.6, 0.08
-    return np.exp(-((r - center) ** 2) / (2 * std ** 2))
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return np.exp(-((r - self.center) ** 2) / (2 * self.std ** 2))
 
 
-def x_field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
-    """
-    Non-invariant scalar field: f(x,y) = x.
+class XField(Field):
+    """Non-invariant x-coordinate field: f(x,y) = x."""
     
-    This is NOT SO(2)-invariant since rotation changes x.
-    
-    Args:
-        x: X coordinates.
-        y: Y coordinates (unused).
-        r: Array of radii (unused).
-    
-    Returns:
-        Array equal to x coordinates.
-    """
-    return x
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return x
 
 
-def fourier(k: int = 1):
-    """
-    Create a Fourier mode scalar field: f(x,y) = cos(k*θ).
+class Fourier(Field):
+    """Fourier mode field: cos(k*θ). NOT SO(2)-invariant for k != 0."""
     
-    This is NOT SO(2)-invariant for k != 0 since rotation by angle φ 
-    transforms cos(kθ) → cos(k(θ+φ)) = cos(kθ + kφ).
+    def __init__(self, k: int = 2):
+        self.k = k
     
-    For k=1: cos(θ) = x/r (equivalent to x_field normalized by radius)
-    For k=2: cos(2θ) = (x² - y²)/r² (quadrupole pattern)
-    
-    Args:
-        k: Fourier mode number (frequency).
-    
-    Returns:
-        Scalar field function with signature (x, y, r) -> values.
-    """
-    def field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
         theta = np.arctan2(y, x)
-        return np.cos(k * theta)
-    
-    field.__name__ = f"fourier_k{k}"
-    field.__doc__ = f"Fourier mode k={k}: cos({k}θ)"
-    return field
+        return np.cos(self.k * theta)
 
 
-def mix(alpha: float = 0.5):
-    """
-    Create a mixed scalar field: f(x,y) = (1-α) * gaussian_ring + α * fourier(k=2).
+class Mix(Field):
+    """Mixed field: (1-α)*field1 + α*field2. Interpolates between any two fields."""
     
-    This interpolates between a fully SO(2)-invariant field (α=0) and 
-    a non-invariant Fourier mode (α=1).
+    def __init__(self, alpha: float = 0.5, field1: Field = None, field2: Field = None):
+        self.alpha = alpha
+        self.field1 = field1 if field1 is not None else GaussianRing()
+        self.field2 = field2 if field2 is not None else Fourier(k=2)
     
-    Args:
-        alpha: Mixing parameter in [0, 1].
-               α=0: pure gaussian_ring (invariant)
-               α=1: pure fourier(k=2) (non-invariant)
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        part1 = self.field1(x, y, r)
+        part2 = self.field2(x, y, r)
+        return (1 - self.alpha) * part1 + self.alpha * part2
+
+
+# =============================================================================
+# SO(2) INVARIANT FIELDS (depend only on radius r)
+# =============================================================================
+
+class Constant(Field):
+    """Trivially SO(2)-invariant constant field: f(x,y) = c."""
     
-    Returns:
-        Scalar field function with signature (x, y, r) -> values.
-    """
-    fourier_k2 = fourier(k=2)
+    def __init__(self, c: float = 1.0):
+        self.c = c
     
-    def field(x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
-        inv_part = gaussian_ring(x, y, r)
-        noninv_part = fourier_k2(x, y, r)
-        return (1 - alpha) * inv_part + alpha * noninv_part
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return np.full_like(r, self.c)
+
+
+class Radius(Field):
+    """SO(2)-invariant linear radius field: f(x,y) = r."""
     
-    field.__name__ = f"mix_alpha{alpha}"
-    field.__doc__ = f"Mixed field: (1-{alpha})*gaussian_ring + {alpha}*cos(2θ)"
-    return field
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return r
+
+
+class RadiusPower(Field):
+    """SO(2)-invariant polynomial radius field: f(x,y) = r^p."""
+    
+    def __init__(self, p: float = 2.0):
+        self.p = p
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return r ** self.p
+
+
+class RadialSine(Field):
+    """SO(2)-invariant radial oscillation: f(x,y) = sin(k*π*r)."""
+    
+    def __init__(self, k: float = 2.0):
+        self.k = k
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return np.sin(self.k * np.pi * r)
+
+
+class MultiRing(Field):
+    """SO(2)-invariant sum of Gaussian rings at different radii."""
+    
+    def __init__(self, centers: list = None, std: float = 0.08):
+        self.centers = centers if centers is not None else [0.3, 0.7]
+        self.std = std
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        result = np.zeros_like(r)
+        for c in self.centers:
+            result += np.exp(-((r - c) ** 2) / (2 * self.std ** 2))
+        return result
+
+
+class RadialStep(Field):
+    """SO(2)-invariant step function: f(x,y) = 1 if r > threshold else 0."""
+    
+    def __init__(self, threshold: float = 0.5):
+        self.threshold = threshold
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return (r > self.threshold).astype(np.float64)
+
+
+class BesselJ0(Field):
+    """SO(2)-invariant Bessel function: f(x,y) = J₀(scale*r)."""
+    
+    def __init__(self, scale: float = 10.0):
+        self.scale = scale
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        from scipy.special import j0
+        return j0(self.scale * r)
+
+
+class RadialGabor(Field):
+    """SO(2)-invariant localized radial oscillation: exp(-(r-c)²/2σ²) * cos(freq*r)."""
+    
+    def __init__(self, center: float = 0.5, std: float = 0.15, freq: float = 8.0):
+        self.center = center
+        self.std = std
+        self.freq = freq
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        envelope = np.exp(-((r - self.center) ** 2) / (2 * self.std ** 2))
+        oscillation = np.cos(self.freq * r)
+        return envelope * oscillation
+
+
+# =============================================================================
+# NON-SO(2) INVARIANT FIELDS (depend on angle θ)
+# =============================================================================
+
+class YField(Field):
+    """Non-invariant y-coordinate field: f(x,y) = y."""
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return y
+
+
+class Quadrant(Field):
+    """Non-invariant checkerboard pattern: f(x,y) = sign(x)*sign(y)."""
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return np.sign(x) * np.sign(y)
+
+
+class Spiral(Field):
+    """Non-invariant spiral wave: f(x,y) = sin(θ + rate*r)."""
+    
+    def __init__(self, rate: float = 1.0):
+        self.rate = rate
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        theta = np.arctan2(y, x)
+        return np.sin(theta + self.rate * r)
+
+
+class RadialAngular(Field):
+    """Non-invariant product of radial and angular: f(x,y) = r * cos(k*θ)."""
+    
+    def __init__(self, k: int = 1):
+        self.k = k
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        theta = np.arctan2(y, x)
+        return r * np.cos(self.k * theta)
+
+
+class Dipole(Field):
+    """Non-invariant dipole-like field: f(x,y) = x / (r + eps)."""
+    
+    def __init__(self, eps: float = 0.01):
+        self.eps = eps
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return x / (r + self.eps)
+
+
+class Vortex(Field):
+    """Non-invariant angle field: f(x,y) = θ / π (normalized to [-1, 1])."""
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        theta = np.arctan2(y, x)
+        return theta / np.pi
 
 
 class ScalarFieldDataset(Dataset):
@@ -150,13 +270,13 @@ class ScalarFieldDataset(Dataset):
     Dataset for scalar field regression on a 2D disk.
     
     Points are sampled uniformly from a disk with full rotational symmetry.
-    Target is computed using a scalar field function.
+    Target is computed using a scalar field.
     
     Attributes:
         X: Input coordinates of shape (n_samples, 2).
         y: Target values of shape (n_samples, 1).
         r_min, r_max: Radius bounds.
-        scalar_field_fn: The target function used.
+        field: The Field instance used.
     """
     
     def __init__(
@@ -164,7 +284,7 @@ class ScalarFieldDataset(Dataset):
         n_samples: int = 1000,
         r_min: float = 0.0,
         r_max: float = 1.0,
-        scalar_field_fn: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]] = None,
+        scalar_field_fn: Optional[Field] = None,
         seed: Optional[int] = None,
     ):
         """
@@ -172,8 +292,7 @@ class ScalarFieldDataset(Dataset):
             n_samples: Total number of samples.
             r_min: Minimum radius.
             r_max: Maximum radius.
-            scalar_field_fn: Function that takes (x, y, r) arrays and returns scalar field values.
-                           Defaults to gaussian_ring.
+            scalar_field_fn: Field instance to evaluate. Defaults to GaussianRing().
             seed: Random seed for reproducibility.
         """
         self.n_samples = n_samples
@@ -182,7 +301,7 @@ class ScalarFieldDataset(Dataset):
         self.seed = seed
         
         if scalar_field_fn is None:
-            scalar_field_fn = gaussian_ring
+            scalar_field_fn = GaussianRing()
         
         self.scalar_field_fn = scalar_field_fn
         
@@ -191,7 +310,7 @@ class ScalarFieldDataset(Dataset):
         # Sample points uniformly from disk
         x, y, r = sample_uniform_disk(n_samples, r_min, r_max, rng)
         
-        # Compute scalar field target using the provided function
+        # Compute scalar field target using the provided field
         target = scalar_field_fn(x, y, r)
         
         # Store as tensors
@@ -213,7 +332,7 @@ def create_dataloaders(
     n_samples: int = 1000,
     r_min: float = 0.0,
     r_max: float = 1.0,
-    scalar_field_fn: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]] = None,
+    scalar_field_fn: Optional[Field] = None,
     train_split: float = 0.8,
     batch_size: int = 64,
     seed: int = 42,
@@ -226,8 +345,7 @@ def create_dataloaders(
         n_samples: Total number of samples.
         r_min: Minimum radius.
         r_max: Maximum radius.
-        scalar_field_fn: Function that takes (x, y, r) arrays and returns scalar field values.
-                       Defaults to gaussian_ring.
+        scalar_field_fn: Field instance to evaluate. Defaults to GaussianRing().
         train_split: Fraction of data for training.
         batch_size: Batch size for dataloaders.
         seed: Random seed for reproducibility.
@@ -241,7 +359,7 @@ def create_dataloaders(
         n_samples=n_samples, 
         r_min=r_min, 
         r_max=r_max,
-        scalar_field_fn=scalar_field_fn or gaussian_ring,
+        scalar_field_fn=scalar_field_fn,
         seed=seed
     )
     

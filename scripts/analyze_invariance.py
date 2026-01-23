@@ -7,9 +7,9 @@ and plots selected symmetry metrics for each layer.
 """
 
 from latsym.models import MLP
-from latsym.tasks import create_dataloaders, gaussian_ring, x_field, fourier, mix
+from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
-from latsym.eval import plot_regression_surface
+from latsym.eval import plot_regression_surface, plot_run_summary
 from latsym.metrics import get_metric, list_metrics
 from latsym.metrics.q_metric import compute_oracle_Q
 
@@ -22,40 +22,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import json
 import os
-from typing import Callable, Optional
-
-
-def get_field_fn(field_name: str, field_args: dict = None) -> Callable:
-    """
-    Get a scalar field function by name.
-    
-    Args:
-        field_name: One of 'gaussian_ring', 'x_field', 'fourier', 'mix'
-        field_args: Optional dict of arguments for parameterized fields:
-                   - fourier: {'k': int} (frequency)
-                   - mix: {'alpha': float} (mixing parameter 0-1)
-    
-    Returns:
-        Scalar field function with signature (x, y, r) -> values
-    
-    Raises:
-        ValueError: If field_name is unknown
-    """
-    field_args = field_args or {}
-    
-    if field_name == "gaussian_ring":
-        return gaussian_ring
-    elif field_name == "x_field":
-        return x_field
-    elif field_name == "fourier":
-        k = field_args.get("k", 2)
-        return fourier(k=k)
-    elif field_name == "mix":
-        alpha = field_args.get("alpha", 0.5)
-        return mix(alpha=alpha)
-    else:
-        raise ValueError(f"Unknown field: {field_name}. "
-                        f"Available: gaussian_ring, x_field, fourier, mix")
+import sys
+from datetime import datetime
 
 
 def build_model(cfg: DictConfig) -> nn.Module:
@@ -117,15 +85,30 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         save_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        history = train_loop(
-            model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
-            cfg.train.total_steps, cfg.train.log_interval, cfg.train.eval_interval,
-            save_dir, cfg.train.save_best,
-        )
-        
-        print(f"Final Train MSE: {history['train_loss'][-1]:.6f}")
-        print(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
-        print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
+        if cfg.train.total_steps <= 0:
+            print("Skipping training (total_steps=0)")
+            history = {
+                'step': [],
+                'train_loss': [],
+                'val_loss': [],
+                'val_mae': [],
+                'lr': [],
+                'steps_per_epoch': len(train_loader),
+            }
+            if not use_temp:
+                torch.save(model.state_dict(), save_dir / 'model.pt')
+                with open(save_dir / 'metrics.json', 'w') as f:
+                    json.dump(history, f, indent=2)
+        else:
+            history = train_loop(
+                model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
+                cfg.train.total_steps, cfg.train.log_interval, cfg.train.eval_interval,
+                save_dir, cfg.train.save_best,
+            )
+            
+            print(f"Final Train MSE: {history['train_loss'][-1]:.6f}")
+            print(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
+            print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
         
         best_model_path = save_dir / 'model_best.pt'
         if best_model_path.exists():
@@ -157,13 +140,20 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
                 json.dump(all_metric_values, f, indent=2)
             
             # Save Q plot
-            plot_Q_vs_layer(Q_values, save_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q)
+            plot_Q_vs_layer(Q_values, save_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q, run_name=name)
             
-            # Save loss curves
-            plot_loss_curves(history, save_dir / 'loss_curves.png')
+            # Save loss curves if we trained
+            if cfg.train.total_steps > 0:
+                plot_loss_curves(history, save_dir / 'loss_curves.png')
             
             # Save regression surface
             plot_regression_surface(model, full_dataset, save_dir / 'regression_surface.png', device)
+            
+            # Save combined summary plot
+            plot_run_summary(
+                history, Q_values, oracle_Q, model, full_dataset, device,
+                save_dir / 'summary.png', run_name=name
+            )
             
             plt.close('all')
         
@@ -180,8 +170,7 @@ def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
     
     Each run can specify:
         - name: Run name (used for folder and aggregated files)
-        - field: Field type (gaussian_ring, x_field, fourier, mix)
-        - field_args: Optional args for parameterized fields (k, alpha)
+        - field: Field config with _target_ for Hydra instantiation
         - model: Optional model config overrides (num_layers, hidden_dim, etc.)
         - train: Optional training config overrides (total_steps, learning_rate, etc.)
         - data: Optional data config overrides (n_samples, etc.)
@@ -212,11 +201,10 @@ def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
     
     for run_spec in runs:
         run_name = run_spec.get('name', 'unnamed')
-        field_name = run_spec.get('field', 'gaussian_ring')
-        field_args = run_spec.get('field_args', {})
+        field_cfg = run_spec.get('field', {'_target_': 'latsym.tasks.GaussianRing'})
         
-        # Get the field function
-        field_fn = get_field_fn(field_name, field_args)
+        # Instantiate the field via Hydra
+        field_fn = hydra.utils.instantiate(field_cfg)
         
         # Create merged config with run-specific overrides
         run_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
@@ -247,17 +235,17 @@ def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
         )
         
         # Track for aggregation
-        q_plot_src = run_dir / 'Q_vs_layer.png'
-        if q_plot_src.exists():
-            q_plot_sources.append((run_name, q_plot_src))
+        summary_src = run_dir / 'summary.png'
+        if summary_src.exists():
+            q_plot_sources.append((run_name, summary_src))
     
-    # Create hard links for Q plots in root directory
+    # Create hard links for summary plots in root directory
     print(f"\n{'='*60}")
-    print("Aggregating Q plots to root directory")
+    print("Aggregating summary plots to root directory")
     print("="*60)
     
     for run_name, src_path in q_plot_sources:
-        dest_path = output_dir / f"{run_name}_Q_vs_layer.png"
+        dest_path = output_dir / f"{run_name}.png"
         try:
             # Remove existing link/file if present
             if dest_path.exists():
@@ -289,4 +277,26 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    # Allow shorthand: python script.py benchmark -> experiment.runs_file=config/runs/benchmark.yaml
+    run_name = None
+    if len(sys.argv) > 1 and sys.argv[1] and not sys.argv[1].startswith('-') and '=' not in sys.argv[1]:
+        if not any('experiment.runs_file' in arg for arg in sys.argv[1:]):
+            run_name = sys.argv[1]
+            sys.argv[1] = f"experiment.runs_file=config/runs/{run_name}.yaml"
+    
+    # Extract run name from runs_file if not already extracted
+    if not run_name:
+        for arg in sys.argv[1:]:
+            if 'experiment.runs_file=' in arg:
+                runs_file = arg.split('=', 1)[1]
+                # Extract name from path like "config/runs/benchmark.yaml" -> "benchmark"
+                run_name = Path(runs_file).stem
+                break
+    
+    # Set output directory to runname_date format
+    if run_name:
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        output_dir_override = f"hydra.run.dir=experiments/{date_str}_{run_name}"
+        sys.argv.append(output_dir_override)
+    
     main()

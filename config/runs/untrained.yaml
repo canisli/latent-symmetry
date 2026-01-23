@@ -1,0 +1,17 @@
+# Default batch runs configuration
+# Each run specifies a field via Hydra _target_ and optional overrides
+
+runs:
+# Untrained baseline (steps=0)
+  - name: gaussian_ring_untrained
+    field:
+      _target_: latsym.tasks.GaussianRing
+    train:
+      total_steps: 0
+      
+  # Invariant field - Gaussian ring (depends only on radius)
+  - name: gaussian_ring
+    field:
+      _target_: latsym.tasks.GaussianRing
+
+  

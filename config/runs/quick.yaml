@@ -3,20 +3,21 @@
 
 runs:
   - name: gaussian_quick
-    field: gaussian_ring
+    field:
+      _target_: latsym.tasks.GaussianRing
     train:
       total_steps: 1000
 
   - name: fourier_k2_quick
-    field: fourier
-    field_args:
+    field:
+      _target_: latsym.tasks.Fourier
       k: 2
     train:
       total_steps: 1000
 
   - name: mix_0.5_quick
-    field: mix
-    field_args:
+    field:
+      _target_: latsym.tasks.Mix
       alpha: 0.5
     train:
       total_steps: 1000

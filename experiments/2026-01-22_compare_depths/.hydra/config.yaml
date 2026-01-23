@@ -1,0 +1,31 @@
+data:
+  n_samples: 1000
+  r_min: 0.0
+  r_max: 1.0
+  train_split: 0.8
+model:
+  input_dim: 2
+  hidden_dim: 128
+  num_layers: 8
+  output_dim: 1
+  activation: relu
+train:
+  batch_size: 64
+  total_steps: 10000
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  use_scheduler: true
+  warmup_steps: 100
+  log_interval: 100
+  eval_interval: 500
+  save_best: true
+metrics:
+  enabled:
+  - Q
+  Q:
+    n_rotations: 32
+    explained_variance: 0.95
+experiment:
+  name: so2_radius_regression
+  seed: 42
+  runs_file: config/runs/compare_depths.yaml

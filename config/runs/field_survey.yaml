@@ -1,0 +1,114 @@
+# Comprehensive field survey for Q metric analysis
+# Tests a variety of SO(2) invariant and non-invariant fields
+
+runs:
+  # =============================================================================
+  # SO(2) INVARIANT FIELDS (Q should approach 0 at output)
+  # =============================================================================
+  
+  # Easy
+  - name: inv_constant
+    field:
+      _target_: latsym.tasks.Constant
+      c: 1.0
+
+  - name: inv_radius
+    field:
+      _target_: latsym.tasks.Radius
+
+  - name: inv_radius_squared
+    field:
+      _target_: latsym.tasks.RadiusPower
+      p: 2.0
+
+  - name: inv_gaussian_ring
+    field:
+      _target_: latsym.tasks.GaussianRing
+
+  # Medium
+  - name: inv_radial_sine
+    field:
+      _target_: latsym.tasks.RadialSine
+      k: 2.0
+
+  - name: inv_multi_ring
+    field:
+      _target_: latsym.tasks.MultiRing
+      centers: [0.3, 0.7]
+      std: 0.08
+
+  - name: inv_radial_step
+    field:
+      _target_: latsym.tasks.RadialStep
+      threshold: 0.5
+
+  # Hard
+  - name: inv_bessel_j0
+    field:
+      _target_: latsym.tasks.BesselJ0
+      scale: 10.0
+
+  - name: inv_radial_gabor
+    field:
+      _target_: latsym.tasks.RadialGabor
+      center: 0.5
+      std: 0.15
+      freq: 8.0
+
+  # =============================================================================
+  # NON-SO(2) INVARIANT FIELDS (Q should approach 1 at output)
+  # =============================================================================
+  
+  # Easy
+  - name: noninv_x
+    field:
+      _target_: latsym.tasks.XField
+
+  - name: noninv_y
+    field:
+      _target_: latsym.tasks.YField
+
+  - name: noninv_fourier_k1
+    field:
+      _target_: latsym.tasks.Fourier
+      k: 1
+
+  - name: noninv_fourier_k2
+    field:
+      _target_: latsym.tasks.Fourier
+      k: 2
+
+  - name: noninv_fourier_k3
+    field:
+      _target_: latsym.tasks.Fourier
+      k: 3
+
+  - name: noninv_fourier_k4
+    field:
+      _target_: latsym.tasks.Fourier
+      k: 4
+
+  # Medium
+  - name: noninv_quadrant
+    field:
+      _target_: latsym.tasks.Quadrant
+
+  - name: noninv_spiral
+    field:
+      _target_: latsym.tasks.Spiral
+      rate: 6.0
+
+  - name: noninv_radial_angular
+    field:
+      _target_: latsym.tasks.RadialAngular
+      k: 2
+
+  # Hard
+  - name: noninv_dipole
+    field:
+      _target_: latsym.tasks.Dipole
+      eps: 0.01
+
+  - name: noninv_vortex
+    field:
+      _target_: latsym.tasks.Vortex
