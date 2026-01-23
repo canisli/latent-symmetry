@@ -1,0 +1,1114 @@
+# Mixing BesselJ0 (SO(2)-invariant) with RadialAngular (non-invariant)
+# α=0: pure BesselJ0, α=1: pure RadialAngular
+
+runs:
+  - name: alpha_0.00
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.00
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.01
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.01
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.02
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.02
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.03
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.03
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.04
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.04
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.05
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.05
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.06
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.06
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.07
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.07
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.08
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.08
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.09
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.09
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.10
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.10
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.11
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.11
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.12
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.12
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.13
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.13
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.14
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.14
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.15
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.15
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.16
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.16
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.17
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.17
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.18
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.18
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.19
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.19
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.20
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.20
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.21
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.21
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.22
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.22
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.23
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.23
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.24
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.24
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.25
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.25
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.26
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.26
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.27
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.27
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.28
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.28
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.29
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.29
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.30
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.30
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.31
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.31
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.32
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.32
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.33
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.33
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.34
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.34
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.35
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.35
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.36
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.36
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.37
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.37
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.38
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.38
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.39
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.39
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.40
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.40
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.41
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.41
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.42
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.42
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.43
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.43
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.44
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.44
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.45
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.45
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.46
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.46
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.47
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.47
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.48
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.48
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.49
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.49
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.50
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.50
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.51
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.51
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.52
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.52
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.53
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.53
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.54
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.54
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.55
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.55
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.56
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.56
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.57
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.57
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.58
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.58
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.59
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.59
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.60
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.60
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.61
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.61
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.62
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.62
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.63
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.63
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.64
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.64
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.65
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.65
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.66
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.66
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.67
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.67
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.68
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.68
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.69
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.69
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.70
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.70
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.71
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.71
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.72
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.72
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.73
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.73
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.74
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.74
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.75
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.75
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.76
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.76
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.77
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.77
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.78
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.78
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.79
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.79
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.80
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.80
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.81
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.81
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.82
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.82
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.83
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.83
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.84
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.84
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.85
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.85
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.86
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.86
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.87
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.87
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.88
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.88
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.89
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.89
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.90
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.90
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.91
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.91
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.92
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.92
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.93
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.93
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.94
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.94
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.95
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.95
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.96
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.96
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.97
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.97
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.98
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.98
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_0.99
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 0.99
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2
+
+  - name: alpha_1.00
+    field:
+      _target_: latsym.tasks.Mix
+      alpha: 1.00
+      field1:
+        _target_: latsym.tasks.BesselJ0
+        scale: 10.0
+      field2:
+        _target_: latsym.tasks.RadialAngular
+        k: 2

@@ -7,10 +7,11 @@ runs:
   # =============================================================================
   
   # Easy
-  - name: inv_constant
-    field:
-      _target_: latsym.tasks.Constant
-      c: 1.0
+  # - name: inv_constant
+  #   field:
+  #     _target_: latsym.tasks.Constant
+  #     c: 1.0
+  # Causes numerical instability with Q
 
   - name: inv_radius
     field:
@@ -64,9 +65,9 @@ runs:
     field:
       _target_: latsym.tasks.XField
 
-  - name: noninv_y
-    field:
-      _target_: latsym.tasks.YField
+  # - name: noninv_y
+  #   field:
+  #     _target_: latsym.tasks.YField
 
   - name: noninv_fourier_k1
     field:
