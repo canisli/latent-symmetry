@@ -412,7 +412,7 @@ def plot_Q_vs_layer(Q_values: Dict[str, float], save_path: Path = None, oracle_Q
     axes[0].set_xticks(x)
     axes[0].set_xticklabels(layers, rotation=45, ha='right')
     axes[0].set_xlabel('Layer')
-    axes[0].set_ylabel('Q (Orbit Variance)')
+    axes[0].set_ylabel('Q')
     axes[0].set_ylim(bottom=0)
     axes[0].grid(axis='y', alpha=0.3)
     axes[0].set_title('Linear')
@@ -584,3 +584,395 @@ class Q_hMetric(BaseMetric):
         """Plot Q_h values."""
         run_name = kwargs.get('run_name', None)
         plot_Q_h_vs_layer(values, save_path, run_name=run_name)
+
+
+def compute_relative_symmetry_loss(
+    model: nn.Module,
+    data: torch.Tensor,
+    layer_idx: int,
+    n_rotations: int = 32,
+    epsilon: float = 1e-8,
+    device: torch.device = None,
+) -> float:
+    """
+    Compute relative symmetry loss for a layer.
+    
+    RSL = E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+    
+    This is a scale-invariant measure of orbit variance. Unlike Q which normalizes
+    by data variance, RSL normalizes each sample individually by the sum of norms,
+    making it robust to varying activation scales across layers.
+    
+    - RSL ≈ 0: Perfect invariance (representations are identical under rotation)
+    - RSL ≈ 2: No invariance (representations are uncorrelated/orthogonal)
+    
+    Args:
+        model: Neural network model.
+        data: Input data tensor of shape (N, 2).
+        layer_idx: Layer index (1-based for hidden, -1 for output).
+        n_rotations: Number of rotation pairs to sample per point.
+        epsilon: Small constant for numerical stability.
+        device: Torch device.
+    
+    Returns:
+        RSL value for the layer.
+    """
+    if device is None:
+        device = torch.device('cpu')
+    
+    model.eval()
+    model.to(device)
+    data = data.to(device)
+    N = data.shape[0]
+    
+    # Compute RSL: E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+    total_rsl = 0.0
+    for _ in range(n_rotations):
+        theta1 = sample_rotations(N, device=device)
+        theta2 = sample_rotations(N, device=device)
+        
+        x_rot1 = rotate(data, theta1)
+        x_rot2 = rotate(data, theta2)
+        
+        with torch.no_grad():
+            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
+            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
+        
+        # ||h(g1*x) - h(g2*x)||² per sample
+        diff_sq = ((h1 - h2) ** 2).sum(dim=-1)  # (N,)
+        
+        # ||h(g1*x)||² + ||h(g2*x)||² per sample
+        norm_sq_sum = (h1 ** 2).sum(dim=-1) + (h2 ** 2).sum(dim=-1)  # (N,)
+        
+        # Relative loss per sample
+        rsl_per_sample = diff_sq / (norm_sq_sum + epsilon)  # (N,)
+        
+        total_rsl += rsl_per_sample.mean()
+    
+    rsl = (total_rsl / n_rotations).item()
+    return rsl
+
+
+def compute_all_relative_symmetry_loss(
+    model: nn.Module,
+    data: torch.Tensor,
+    n_rotations: int = 32,
+    epsilon: float = 1e-8,
+    device: torch.device = None,
+) -> Dict[str, float]:
+    """
+    Compute relative symmetry loss for all layers in the model.
+    
+    Args:
+        model: Neural network model.
+        data: Input data tensor of shape (N, 2).
+        n_rotations: Number of rotation pairs to sample per point.
+        epsilon: Small constant for numerical stability.
+        device: Torch device.
+    
+    Returns:
+        Dictionary mapping layer names to RSL values.
+    """
+    rsl_values = {}
+    
+    # Hidden layers (1-indexed)
+    for layer_idx in range(1, model.num_linear_layers):
+        rsl = compute_relative_symmetry_loss(model, data, layer_idx, n_rotations, epsilon, device)
+        rsl_values[f'layer_{layer_idx}'] = rsl
+    
+    # Output layer
+    rsl_out = compute_relative_symmetry_loss(model, data, -1, n_rotations, epsilon, device)
+    rsl_values['output'] = rsl_out
+    
+    return rsl_values
+
+
+def plot_rsl_vs_layer(rsl_values: Dict[str, float], save_path: Path = None, run_name: str = None):
+    """
+    Plot Relative Symmetry Loss as a function of layer depth.
+    
+    Args:
+        rsl_values: Dictionary mapping layer names to RSL values.
+        save_path: Optional path to save the plot.
+        run_name: Optional run name to include in the title.
+    """
+    layers = list(rsl_values.keys())
+    values = list(rsl_values.values())
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    x = range(len(layers))
+    
+    colors = ['mediumseagreen'] * len(layers)
+    
+    # Left: linear scale
+    axes[0].bar(x, values, color=colors, edgecolor='black')
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(layers, rotation=45, ha='right')
+    axes[0].set_xlabel('Layer')
+    axes[0].set_ylabel('RSL (Relative Symmetry Loss)')
+    axes[0].set_ylim(bottom=0)
+    axes[0].grid(axis='y', alpha=0.3)
+    axes[0].set_title('Linear')
+    
+    # Right: log scale
+    eps = 1e-6
+    log_values = [max(v, eps) for v in values]
+    axes[1].bar(x, log_values, color=colors, edgecolor='black')
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(layers, rotation=45, ha='right')
+    axes[1].set_xlabel('Layer')
+    axes[1].set_yscale('log')
+    axes[1].grid(axis='y', alpha=0.3)
+    axes[1].set_title('Log')
+    
+    # Set overall title with run name if provided
+    title = 'Relative Symmetry Loss by Layer'
+    if run_name:
+        title = f'{run_name}: {title}'
+    fig.suptitle(title)
+    
+    plt.tight_layout()
+    fig.subplots_adjust(top=0.88)
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+@register("RSL")
+class RSLMetric(BaseMetric):
+    """
+    Relative Symmetry Loss metric for measuring SO(2) invariance.
+    
+    RSL = E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+    
+    This is a scale-invariant measure of orbit variance. It normalizes each 
+    sample individually by the sum of representation norms, making it robust 
+    to varying activation scales across layers.
+    
+    - RSL ≈ 0: Perfect invariance
+    - RSL ≈ 2: No invariance (orthogonal representations)
+    
+    Parameters:
+        n_rotations: Number of rotation pairs to sample (default: 32)
+        epsilon: Small constant for numerical stability (default: 1e-8)
+    """
+    
+    name = "RSL"
+    
+    def __init__(self, n_rotations: int = 32, epsilon: float = 1e-8, **kwargs):
+        super().__init__(**kwargs)
+        self.n_rotations = n_rotations
+        self.epsilon = epsilon
+    
+    def compute(
+        self,
+        model: nn.Module,
+        data: torch.Tensor,
+        device: torch.device = None,
+        **kwargs
+    ) -> Dict[str, float]:
+        """Compute RSL for all layers."""
+        return compute_all_relative_symmetry_loss(
+            model, 
+            data, 
+            n_rotations=kwargs.get('n_rotations', self.n_rotations),
+            epsilon=kwargs.get('epsilon', self.epsilon),
+            device=device
+        )
+    
+    def plot(
+        self,
+        values: Dict[str, float],
+        save_path: Path = None,
+        **kwargs
+    ) -> None:
+        """Plot RSL values."""
+        run_name = kwargs.get('run_name', None)
+        plot_rsl_vs_layer(values, save_path, run_name=run_name)
+
+
+def compute_symmetry_loss(
+    model: nn.Module,
+    data: torch.Tensor,
+    layer_idx: int,
+    n_rotations: int = 32,
+    device: torch.device = None,
+) -> float:
+    """
+    Compute raw symmetry loss for a layer.
+    
+    SL = (1/2) E[||h(g1*x) - h(g2*x)||²]
+    
+    This is the unnormalized orbit variance - the raw expected squared distance
+    between representations of differently-rotated inputs.
+    
+    Args:
+        model: Neural network model.
+        data: Input data tensor of shape (N, 2).
+        layer_idx: Layer index (1-based for hidden, -1 for output).
+        n_rotations: Number of rotation pairs to sample per point.
+        device: Torch device.
+    
+    Returns:
+        SL value for the layer.
+    """
+    if device is None:
+        device = torch.device('cpu')
+    
+    model.eval()
+    model.to(device)
+    data = data.to(device)
+    N = data.shape[0]
+    
+    # Compute SL: (1/2) E[||h(g1*x) - h(g2*x)||²]
+    total_sl = 0.0
+    for _ in range(n_rotations):
+        theta1 = sample_rotations(N, device=device)
+        theta2 = sample_rotations(N, device=device)
+        
+        x_rot1 = rotate(data, theta1)
+        x_rot2 = rotate(data, theta2)
+        
+        with torch.no_grad():
+            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
+            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
+        
+        # ||h(g1*x) - h(g2*x)||² per sample
+        diff_sq = ((h1 - h2) ** 2).sum(dim=-1)  # (N,)
+        total_sl += diff_sq.mean()
+    
+    sl = (0.5 * total_sl / n_rotations).item()
+    return sl
+
+
+def compute_all_symmetry_loss(
+    model: nn.Module,
+    data: torch.Tensor,
+    n_rotations: int = 32,
+    device: torch.device = None,
+) -> Dict[str, float]:
+    """
+    Compute raw symmetry loss for all layers in the model.
+    
+    Args:
+        model: Neural network model.
+        data: Input data tensor of shape (N, 2).
+        n_rotations: Number of rotation pairs to sample per point.
+        device: Torch device.
+    
+    Returns:
+        Dictionary mapping layer names to SL values.
+    """
+    sl_values = {}
+    
+    # Hidden layers (1-indexed)
+    for layer_idx in range(1, model.num_linear_layers):
+        sl = compute_symmetry_loss(model, data, layer_idx, n_rotations, device)
+        sl_values[f'layer_{layer_idx}'] = sl
+    
+    # Output layer
+    sl_out = compute_symmetry_loss(model, data, -1, n_rotations, device)
+    sl_values['output'] = sl_out
+    
+    return sl_values
+
+
+def plot_sl_vs_layer(sl_values: Dict[str, float], save_path: Path = None, run_name: str = None):
+    """
+    Plot Symmetry Loss as a function of layer depth.
+    
+    Args:
+        sl_values: Dictionary mapping layer names to SL values.
+        save_path: Optional path to save the plot.
+        run_name: Optional run name to include in the title.
+    """
+    layers = list(sl_values.keys())
+    values = list(sl_values.values())
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    x = range(len(layers))
+    
+    colors = ['orchid'] * len(layers)
+    
+    # Left: linear scale
+    axes[0].bar(x, values, color=colors, edgecolor='black')
+    axes[0].set_xticks(x)
+    axes[0].set_xticklabels(layers, rotation=45, ha='right')
+    axes[0].set_xlabel('Layer')
+    axes[0].set_ylabel('SL (Symmetry Loss)')
+    axes[0].set_ylim(bottom=0)
+    axes[0].grid(axis='y', alpha=0.3)
+    axes[0].set_title('Linear')
+    
+    # Right: log scale
+    eps = 1e-10
+    log_values = [max(v, eps) for v in values]
+    axes[1].bar(x, log_values, color=colors, edgecolor='black')
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(layers, rotation=45, ha='right')
+    axes[1].set_xlabel('Layer')
+    axes[1].set_yscale('log')
+    axes[1].grid(axis='y', alpha=0.3)
+    axes[1].set_title('Log')
+    
+    # Set overall title with run name if provided
+    title = 'Symmetry Loss by Layer'
+    if run_name:
+        title = f'{run_name}: {title}'
+    fig.suptitle(title)
+    
+    plt.tight_layout()
+    fig.subplots_adjust(top=0.88)
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+@register("SL")
+class SLMetric(BaseMetric):
+    """
+    Raw Symmetry Loss metric for measuring SO(2) invariance.
+    
+    SL = (1/2) E[||h(g1*x) - h(g2*x)||²]
+    
+    This is the unnormalized orbit variance - the raw expected squared distance
+    between representations of differently-rotated inputs. Unlike Q or RSL,
+    this metric is not normalized and will scale with activation magnitudes.
+    
+    - SL = 0: Perfect invariance
+    - SL > 0: Larger values indicate more variance under rotation
+    
+    Parameters:
+        n_rotations: Number of rotation pairs to sample (default: 32)
+    """
+    
+    name = "SL"
+    
+    def __init__(self, n_rotations: int = 32, **kwargs):
+        super().__init__(**kwargs)
+        self.n_rotations = n_rotations
+    
+    def compute(
+        self,
+        model: nn.Module,
+        data: torch.Tensor,
+        device: torch.device = None,
+        **kwargs
+    ) -> Dict[str, float]:
+        """Compute SL for all layers."""
+        return compute_all_symmetry_loss(
+            model, 
+            data, 
+            n_rotations=kwargs.get('n_rotations', self.n_rotations),
+            device=device
+        )
+    
+    def plot(
+        self,
+        values: Dict[str, float],
+        save_path: Path = None,
+        **kwargs
+    ) -> None:
+        """Plot SL values."""
+        run_name = kwargs.get('run_name', None)
+        plot_sl_vs_layer(values, save_path, run_name=run_name)

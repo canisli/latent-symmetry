@@ -93,14 +93,15 @@ class XField(Field):
 
 
 class Fourier(Field):
-    """Fourier mode field: cos(k*θ). NOT SO(2)-invariant for k != 0."""
+    """Fourier mode field: cos(k*θ) + offset. NOT SO(2)-invariant for k != 0."""
     
-    def __init__(self, k: int = 2):
+    def __init__(self, k: int = 2, offset: float = 0.0):
         self.k = k
+        self.offset = offset
     
     def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
         theta = np.arctan2(y, x)
-        return np.cos(self.k * theta)
+        return np.cos(self.k * theta) + self.offset
 
 
 class Mix(Field):
@@ -146,6 +147,16 @@ class RadiusPower(Field):
     
     def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
         return r ** self.p
+
+
+class RadiusOffset(Field):
+    """SO(2)-invariant radius with offset: f(x,y) = r + offset."""
+    
+    def __init__(self, offset: float = 100.0):
+        self.offset = offset
+    
+    def __call__(self, x: np.ndarray, y: np.ndarray, r: np.ndarray) -> np.ndarray:
+        return r + self.offset
 
 
 class RadialSine(Field):

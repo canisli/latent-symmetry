@@ -11,7 +11,7 @@ from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface, plot_run_summary
 from latsym.metrics import get_metric, list_metrics
-from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_h_vs_layer
+from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_h_vs_layer, plot_rsl_vs_layer, plot_sl_vs_layer
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -129,6 +129,16 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         metric_h = get_metric("Q_h", **metric_h_cfg)
         Q_h_values = metric_h.compute(model, X, device=device)
         
+        # Compute RSL metric (relative symmetry loss)
+        rsl_cfg = OmegaConf.to_container(cfg.metrics.get("RSL", {}), resolve=True)
+        rsl_metric = get_metric("RSL", **rsl_cfg)
+        RSL_values = rsl_metric.compute(model, X, device=device)
+        
+        # Compute SL metric (raw symmetry loss)
+        sl_cfg = OmegaConf.to_container(cfg.metrics.get("SL", {}), resolve=True)
+        sl_metric = get_metric("SL", **sl_cfg)
+        SL_values = sl_metric.compute(model, X, device=device)
+        
         # Compute oracle Q
         oracle_Q = compute_oracle_Q(X, y, scalar_field_fn, n_rotations=32, device=device)
         
@@ -139,11 +149,17 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         print(f"  Q_h values by layer:")
         for layer, val in Q_h_values.items():
             print(f"    {layer}: Q_h = {val:.4f}")
+        print(f"  RSL values by layer:")
+        for layer, val in RSL_values.items():
+            print(f"    {layer}: RSL = {val:.4f}")
+        print(f"  SL values by layer:")
+        for layer, val in SL_values.items():
+            print(f"    {layer}: SL = {val:.6f}")
         
         # Save artifacts if output_dir provided
         if not use_temp:
             # Save metric values
-            all_metric_values = {"Q": Q_values, "Q_h": Q_h_values}
+            all_metric_values = {"Q": Q_values, "Q_h": Q_h_values, "RSL": RSL_values, "SL": SL_values}
             with open(save_dir / 'metric_values.json', 'w') as f:
                 json.dump(all_metric_values, f, indent=2)
             
@@ -152,6 +168,12 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             
             # Save Q_h plot (not included in summary)
             plot_Q_h_vs_layer(Q_h_values, save_dir / 'Q_h_vs_layer.png', run_name=name)
+            
+            # Save RSL plot
+            plot_rsl_vs_layer(RSL_values, save_dir / 'RSL_vs_layer.png', run_name=name)
+            
+            # Save SL plot
+            plot_sl_vs_layer(SL_values, save_dir / 'SL_vs_layer.png', run_name=name)
             
             # Save loss curves if we trained
             if cfg.train.total_steps > 0:
@@ -168,7 +190,7 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             
             plt.close('all')
         
-        return Q_values, oracle_Q, Q_h_values, history
+        return Q_values, oracle_Q, Q_h_values, RSL_values, SL_values, history
         
     finally:
         if temp_ctx is not None:
@@ -239,7 +261,7 @@ def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
         run_dir = output_dir / run_name
         
         # Run the experiment
-        Q_values, oracle_Q, Q_h_values, history = run_single_field(
+        Q_values, oracle_Q, Q_h_values, RSL_values, SL_values, history = run_single_field(
             run_cfg, field_fn, device, 
             output_dir=run_dir, 
             name=run_name

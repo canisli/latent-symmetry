@@ -153,7 +153,7 @@ def plot_run_summary(
     ax_q.set_xticks(x)
     ax_q.set_xticklabels(layers, rotation=45, ha='right', fontsize='small')
     ax_q.set_xlabel('Layer')
-    ax_q.set_ylabel('Q (Orbit Variance)')
+    ax_q.set_ylabel('Q')
     ax_q.set_title('SO(2) Invariance Metric by Layer')
     ax_q.set_ylim(bottom=0)
     ax_q.grid(axis='y', alpha=0.3)
