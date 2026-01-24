@@ -16,3 +16,9 @@ eval_interval: 500    # Evaluate on val set every N steps
 
 # Checkpointing
 save_best: true       # Save best model by val loss
+
+# Symmetry penalty
+lambda_sym: 0.0              # Weight for symmetry penalty (0 = disabled)
+sym_layers: []               # List of layers to penalize (1-indexed, -1 for output)
+sym_penalty_type: "raw"      # "raw" (RawOrbitVariancePenalty) or "pca" (PCAOrbitVariancePenalty)
+n_augmentations_train: 4     # Number of rotation pairs per sample for penalty

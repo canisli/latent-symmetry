@@ -17,10 +17,10 @@ runs:
     field:
       _target_: latsym.tasks.Radius
 
-  - name: inv_radius_squared
+  - name: inv_radius_plus_100
     field:
-      _target_: latsym.tasks.RadiusPower
-      p: 2.0
+      _target_: latsym.tasks.RadiusOffset
+      offset: 100.0
 
   - name: inv_gaussian_ring
     field:
@@ -74,10 +74,11 @@ runs:
       _target_: latsym.tasks.Fourier
       k: 1
 
-  - name: noninv_fourier_k2
+  - name: noninv_fourier_k2_plus_100
     field:
       _target_: latsym.tasks.Fourier
       k: 2
+      offset: 100.0
 
   - name: noninv_fourier_k3
     field:

@@ -2,8 +2,21 @@
 # Which metrics to compute and plot
 enabled:
   - Q
+  - Q_h
+  - RSL
+  - SL
 
 # Metric-specific parameters
 Q:
   n_rotations: 32
   explained_variance: 0.95
+
+Q_h:
+  n_rotations: 32
+
+RSL:
+  n_rotations: 32
+  epsilon: 1e-8
+
+SL:
+  n_rotations: 32

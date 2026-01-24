@@ -4,6 +4,7 @@ from latsym.models import MLP
 from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface
+from latsym.symmetry_penalty import create_symmetry_penalty, PCAOrbitVariancePenalty
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -44,15 +45,41 @@ def main(cfg: DictConfig):
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)
     scheduler = create_scheduler(optimizer, cfg.train.total_steps, cfg.train.warmup_steps) if cfg.train.use_scheduler else None
     
+    # Setup symmetry penalty if configured
+    lambda_sym = cfg.train.get('lambda_sym', 0.0)
+    sym_layers = list(cfg.train.get('sym_layers', []))
+    sym_penalty_type = cfg.train.get('sym_penalty_type', 'raw')
+    n_augmentations = cfg.train.get('n_augmentations_train', 4)
+    
+    symmetry_penalty = None
+    if lambda_sym > 0 and sym_layers:
+        print(f"Using symmetry penalty: type={sym_penalty_type}, lambda={lambda_sym}, layers={sym_layers}")
+        symmetry_penalty = create_symmetry_penalty(sym_penalty_type)
+        
+        # For PCA penalty, fit the projections on training data
+        if isinstance(symmetry_penalty, PCAOrbitVariancePenalty):
+            print("Fitting PCA projections for symmetry penalty...")
+            # Get all training data for fitting
+            X_train = torch.cat([batch[0] for batch in train_loader], dim=0)
+            model.to(device)
+            symmetry_penalty.fit_all(model, X_train, sym_layers, device)
+            print("PCA fitting complete.")
+    
     history = train_loop(
         model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
         cfg.train.total_steps, cfg.train.log_interval, cfg.train.eval_interval,
         output_dir, cfg.train.save_best,
+        symmetry_penalty=symmetry_penalty,
+        lambda_sym=lambda_sym,
+        sym_layers=sym_layers,
+        n_augmentations=n_augmentations,
     )
     
     print(f"Final Train MSE: {history['train_loss'][-1]:.6f}")
     print(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
     print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
+    if lambda_sym > 0 and sym_layers:
+        print(f"Final Sym Loss: {history['sym_loss'][-1]:.6f}")
     
     best_model_path = output_dir / 'model_best.pt'
     if best_model_path.exists():
