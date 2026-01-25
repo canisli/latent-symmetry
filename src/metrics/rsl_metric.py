@@ -1,0 +1,206 @@
+"""
+RSL (Relative Symmetry Loss) metric for measuring SO(2) invariance.
+
+RSL = E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+
+- RSL ≈ 0: Perfect invariance
+- RSL ≈ 2: No invariance (orthogonal representations)
+"""
+
+import torch
+import torch.nn as nn
+from typing import Dict
+from pathlib import Path
+
+from .base import BaseMetric
+from .registry import register
+from .plotting import plot_metric_vs_layer, TrainingInfo
+from ..groups.so2 import rotate, sample_rotations
+
+
+def compute_relative_symmetry_loss(
+    model: nn.Module,
+    data: torch.Tensor,
+    layer_idx: int,
+    n_rotations: int = 32,
+    epsilon: float = 1e-8,
+    device: torch.device = None,
+) -> float:
+    """
+    Compute relative symmetry loss for a layer.
+    
+    RSL = E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+    
+    This is a scale-invariant measure of orbit variance. Unlike Q which normalizes
+    by data variance, RSL normalizes each sample individually by the sum of norms,
+    making it robust to varying activation scales across layers.
+    
+    - RSL ≈ 0: Perfect invariance (representations are identical under rotation)
+    - RSL ≈ 2: No invariance (representations are uncorrelated/orthogonal)
+    
+    Args:
+        model: Neural network model.
+        data: Input data tensor of shape (N, 2).
+        layer_idx: Layer index (1-based for hidden, -1 for output).
+        n_rotations: Number of rotation pairs to sample per point.
+        epsilon: Small constant for numerical stability.
+        device: Torch device.
+    
+    Returns:
+        RSL value for the layer.
+    """
+    if device is None:
+        device = torch.device('cpu')
+    
+    model.eval()
+    model.to(device)
+    data = data.to(device)
+    N = data.shape[0]
+    
+    # Compute RSL: E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+    total_rsl = 0.0
+    for _ in range(n_rotations):
+        theta1 = sample_rotations(N, device=device)
+        theta2 = sample_rotations(N, device=device)
+        
+        x_rot1 = rotate(data, theta1)
+        x_rot2 = rotate(data, theta2)
+        
+        with torch.no_grad():
+            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
+            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
+        
+        # ||h(g1*x) - h(g2*x)||² per sample
+        diff_sq = ((h1 - h2) ** 2).sum(dim=-1)  # (N,)
+        
+        # ||h(g1*x)||² + ||h(g2*x)||² per sample
+        norm_sq_sum = (h1 ** 2).sum(dim=-1) + (h2 ** 2).sum(dim=-1)  # (N,)
+        
+        # Relative loss per sample
+        rsl_per_sample = diff_sq / (norm_sq_sum + epsilon)  # (N,)
+        
+        total_rsl += rsl_per_sample.mean()
+    
+    rsl = (total_rsl / n_rotations).item()
+    return rsl
+
+
+def compute_all_relative_symmetry_loss(
+    model: nn.Module,
+    data: torch.Tensor,
+    n_rotations: int = 32,
+    epsilon: float = 1e-8,
+    device: torch.device = None,
+) -> Dict[str, float]:
+    """
+    Compute relative symmetry loss for all layers in the model.
+    
+    Args:
+        model: Neural network model.
+        data: Input data tensor of shape (N, 2).
+        n_rotations: Number of rotation pairs to sample per point.
+        epsilon: Small constant for numerical stability.
+        device: Torch device.
+    
+    Returns:
+        Dictionary mapping layer names to RSL values.
+    """
+    rsl_values = {}
+    
+    # Hidden layers (1-indexed)
+    for layer_idx in range(1, model.num_linear_layers):
+        rsl = compute_relative_symmetry_loss(model, data, layer_idx, n_rotations, epsilon, device)
+        rsl_values[f'layer_{layer_idx}'] = rsl
+    
+    # Output layer
+    rsl_out = compute_relative_symmetry_loss(model, data, -1, n_rotations, epsilon, device)
+    rsl_values['output'] = rsl_out
+    
+    return rsl_values
+
+
+def plot_rsl_vs_layer(
+    rsl_values: Dict[str, float],
+    save_path: Path = None,
+    run_name: str = None,
+    sym_penalty_type: str = None,
+    sym_layers: list = None,
+    lambda_sym: float = 0.0,
+):
+    """
+    Plot Relative Symmetry Loss as a function of layer depth.
+    
+    Args:
+        rsl_values: Dictionary mapping layer names to RSL values.
+        save_path: Optional path to save the plot.
+        run_name: Optional run name (unused, kept for API compatibility).
+        sym_penalty_type: Type of symmetry penalty used during training.
+        sym_layers: List of layers penalized during training.
+        lambda_sym: Lambda value for symmetry penalty.
+    """
+    training_info = TrainingInfo(
+        penalty_type=sym_penalty_type,
+        layers=sym_layers,
+        lambda_sym=lambda_sym,
+    )
+    plot_metric_vs_layer(
+        values=rsl_values,
+        metric_name='RSL',
+        save_path=save_path,
+        color='mediumseagreen',
+        ylabel='RSL (Relative Symmetry Loss)',
+        training_info=training_info,
+    )
+
+
+@register("RSL")
+class RSLMetric(BaseMetric):
+    """
+    Relative Symmetry Loss metric for measuring SO(2) invariance.
+    
+    RSL = E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
+    
+    This is a scale-invariant measure of orbit variance. It normalizes each 
+    sample individually by the sum of representation norms, making it robust 
+    to varying activation scales across layers.
+    
+    - RSL ≈ 0: Perfect invariance
+    - RSL ≈ 2: No invariance (orthogonal representations)
+    
+    Parameters:
+        n_rotations: Number of rotation pairs to sample (default: 32)
+        epsilon: Small constant for numerical stability (default: 1e-8)
+    """
+    
+    name = "RSL"
+    
+    def __init__(self, n_rotations: int = 32, epsilon: float = 1e-8, **kwargs):
+        super().__init__(**kwargs)
+        self.n_rotations = n_rotations
+        self.epsilon = epsilon
+    
+    def compute(
+        self,
+        model: nn.Module,
+        data: torch.Tensor,
+        device: torch.device = None,
+        **kwargs
+    ) -> Dict[str, float]:
+        """Compute RSL for all layers."""
+        return compute_all_relative_symmetry_loss(
+            model, 
+            data, 
+            n_rotations=kwargs.get('n_rotations', self.n_rotations),
+            epsilon=kwargs.get('epsilon', self.epsilon),
+            device=device
+        )
+    
+    def plot(
+        self,
+        values: Dict[str, float],
+        save_path: Path = None,
+        **kwargs
+    ) -> None:
+        """Plot RSL values."""
+        run_name = kwargs.get('run_name', None)
+        plot_rsl_vs_layer(values, save_path, run_name=run_name)

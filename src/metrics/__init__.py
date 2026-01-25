@@ -19,9 +19,12 @@ Usage:
 
 from .registry import get_metric, list_metrics, register, is_registered
 from .base import SymmetryMetric, BaseMetric
+from .plotting import TrainingInfo, plot_metric_vs_layer
 
 # Import metric modules to trigger registration
 from . import q_metric
+from . import rsl_metric
+from . import sl_metric
 
 __all__ = [
     # Registry functions
@@ -32,4 +35,7 @@ __all__ = [
     # Base classes
     "SymmetryMetric",
     "BaseMetric",
+    # Plotting utilities
+    "TrainingInfo",
+    "plot_metric_vs_layer",
 ]

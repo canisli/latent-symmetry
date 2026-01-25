@@ -112,21 +112,23 @@ def plot_run_summary(
     
     # === A: Loss curves (top left, spans cols 0-1) ===
     ax_loss = fig.add_subplot(gs[0, :2])
-    if history['step']:  # Only plot if training happened
-        steps = np.array(history['step'])
-        train_loss = np.array(history['train_loss'])
+    
+    # Check for data using new or old history format
+    eval_steps = history.get('eval_step', history.get('step', []))
+    
+    if eval_steps:  # Only plot if training happened
+        eval_steps = np.array(eval_steps)
+        train_loss_eval = np.array(history['train_loss'])
         val_loss = np.array(history['val_loss'])
-        steps_per_epoch = max(1, int(history.get('steps_per_epoch', 1)))
         
-        epoch_idx = (steps - 1) // steps_per_epoch
-        epoch_vals = np.unique(epoch_idx)
-        epoch_train = np.array([train_loss[epoch_idx == e].mean() for e in epoch_vals])
-        epoch_val = np.array([val_loss[epoch_idx == e].mean() for e in epoch_vals])
+        # Get per-batch loss if available
+        batch_steps = np.array(history.get('batch_step', []))
+        batch_loss = np.array(history.get('batch_loss', []))
         
-        ax_loss.plot(steps, train_loss, color='tab:blue', alpha=0.25, linewidth=1, label='Train (step)')
-        ax_loss.plot(steps, val_loss, color='tab:orange', alpha=0.25, linewidth=1, label='Val (step)')
-        ax_loss.plot((epoch_vals + 1) * steps_per_epoch, epoch_train, color='tab:blue', linewidth=2, label='Train (epoch)')
-        ax_loss.plot((epoch_vals + 1) * steps_per_epoch, epoch_val, color='tab:orange', linewidth=2, label='Val (epoch)')
+        if len(batch_steps) > 0:
+            ax_loss.plot(batch_steps, batch_loss, color='tab:blue', alpha=0.3, linewidth=0.5, label='Train (batch)')
+        ax_loss.plot(eval_steps, train_loss_eval, color='tab:blue', linewidth=2, label='Train (eval)')
+        ax_loss.plot(eval_steps, val_loss, color='tab:orange', linewidth=2, label='Val (eval)')
         ax_loss.set_yscale('log')
         ax_loss.set_xlabel('Step')
         ax_loss.set_ylabel('Loss')

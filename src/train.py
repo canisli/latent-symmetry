@@ -179,21 +179,22 @@ def train_loop(
     model.to(device)
     
     history = {
-        'step': [],
-        'train_loss': [],
+        'batch_step': [],         # Step number for each batch
+        'batch_loss': [],         # Per-batch task loss (training dynamics)
+        'batch_sym_loss': [],     # Per-batch symmetry loss
+        'eval_step': [],          # Step number for each evaluation
+        'train_loss': [],         # Full-dataset task loss evaluation
         'val_loss': [],
+        'train_sym_loss': [],     # Full-dataset symmetry loss on train set
+        'val_sym_loss': [],       # Full-dataset symmetry loss on val set
         'val_mae': [],
         'lr': [],
-        'sym_loss': [],
     }
     steps_per_epoch = len(train_loader)
     
     best_val_loss = float('inf')
     step = 0
     train_iter = iter(train_loader)
-    running_task_loss = 0.0
-    running_sym_loss = 0.0
-    running_count = 0
     
     pbar = tqdm(range(total_steps), desc="Training")
     
@@ -213,9 +214,11 @@ def train_loop(
             sym_layers=sym_layers,
             n_augmentations=n_augmentations,
         )
-        running_task_loss += task_loss
-        running_sym_loss += sym_loss
-        running_count += 1
+        
+        # Record per-batch losses
+        history['batch_step'].append(step + 1)
+        history['batch_loss'].append(task_loss)
+        history['batch_sym_loss'].append(sym_loss)
         
         if scheduler is not None:
             scheduler.step()
@@ -225,19 +228,31 @@ def train_loop(
             val_metrics = evaluate(model, val_loader, loss_fn, device, desc="Val")
             train_metrics = evaluate(model, train_loader, loss_fn, device, desc="Train")
             
-            history['step'].append(step + 1)
+            history['eval_step'].append(step + 1)
             history['train_loss'].append(train_metrics['loss'])
             history['val_loss'].append(val_metrics['loss'])
             history['val_mae'].append(val_metrics['mae'])
             history['lr'].append(optimizer.param_groups[0]['lr'])
-            # Record average symmetry loss since last eval
-            avg_sym_loss = running_sym_loss / running_count if running_count > 0 else 0.0
-            history['sym_loss'].append(avg_sym_loss)
             
-            # Reset running averages
-            running_task_loss = 0.0
-            running_sym_loss = 0.0
-            running_count = 0
+            # Evaluate symmetry loss on full datasets if penalty is active
+            if symmetry_penalty is not None and lambda_sym > 0 and sym_layers:
+                # Get full train data
+                X_train = torch.cat([batch[0] for batch in train_loader], dim=0)
+                X_val = torch.cat([batch[0] for batch in val_loader], dim=0)
+                
+                with torch.no_grad():
+                    train_sym = symmetry_penalty.compute_total(
+                        model, X_train, sym_layers, n_augmentations, device
+                    ).item()
+                    val_sym = symmetry_penalty.compute_total(
+                        model, X_val, sym_layers, n_augmentations, device
+                    ).item()
+                
+                history['train_sym_loss'].append(train_sym)
+                history['val_sym_loss'].append(val_sym)
+            else:
+                history['train_sym_loss'].append(0.0)
+                history['val_sym_loss'].append(0.0)
             
             # Save best model
             if save_best and save_dir is not None and val_metrics['loss'] < best_val_loss:
@@ -250,36 +265,61 @@ def train_loop(
     if save_dir is not None:
         torch.save(model.state_dict(), save_dir / 'model.pt')
         
-        # Save metrics
+        # Save metrics (convert to serializable format)
+        history_to_save = {k: v for k, v in history.items()}
         with open(save_dir / 'metrics.json', 'w') as f:
-            json.dump(history, f, indent=2)
+            json.dump(history_to_save, f, indent=2)
+    
     history['steps_per_epoch'] = steps_per_epoch
     return history
 
 
-def plot_loss_curves(history, save_path):
+def plot_loss_curves(
+    history,
+    save_path,
+    sym_penalty_name: str = None,
+    sym_layers: List[int] = None,
+    lambda_sym: float = 0.0,
+):
     """
     Plot training loss curves.
     
+    Shows two types of training loss:
+    - Batch loss: Per-batch loss at each training step (training dynamics)
+    - Eval loss: Full-dataset evaluation (true performance)
+    
     If symmetry loss is present and non-zero, creates two subplots:
-    - Left: Task loss (train/val)
-    - Right: Symmetry loss
+    - Left: Task loss (batch for train dynamics, eval for train/val performance)
+    - Right: Symmetry loss (batch for train dynamics, eval for train/val performance)
     
     Otherwise, creates a single plot with task loss.
+    
+    Args:
+        history: Training history dictionary.
+        save_path: Path to save the plot.
+        sym_penalty_name: Name of the symmetry penalty class (e.g., "RawOrbitVariancePenalty").
+        sym_layers: List of layer indices being penalized.
+        lambda_sym: Lambda weight for symmetry penalty.
     """
-    steps = np.array(history['step'])
-    train_loss = np.array(history['train_loss'])
+    # Per-batch data (recorded every step)
+    batch_steps = np.array(history.get('batch_step', []))
+    batch_loss = np.array(history.get('batch_loss', []))
+    batch_sym_loss = np.array(history.get('batch_sym_loss', []))
+    
+    # Evaluation data (recorded at eval intervals)
+    eval_steps = np.array(history.get('eval_step', history.get('step', [])))
+    train_loss_eval = np.array(history['train_loss'])
     val_loss = np.array(history['val_loss'])
-    steps_per_epoch = max(1, int(history.get('steps_per_epoch', 1)))
+    train_sym_loss = np.array(history.get('train_sym_loss', []))
+    val_sym_loss = np.array(history.get('val_sym_loss', []))
     
     # Check if we have non-trivial symmetry loss
-    sym_loss = np.array(history.get('sym_loss', []))
-    has_sym_loss = len(sym_loss) > 0 and np.any(sym_loss > 0)
-
-    epoch_idx = (steps - 1) // steps_per_epoch
-    epoch_vals = np.unique(epoch_idx)
-    epoch_train = np.array([train_loss[epoch_idx == e].mean() for e in epoch_vals])
-    epoch_val = np.array([val_loss[epoch_idx == e].mean() for e in epoch_vals])
+    has_sym_loss = len(batch_sym_loss) > 0 and np.any(batch_sym_loss > 0)
+    
+    # For backward compatibility: if no batch data, use eval data for both
+    if len(batch_steps) == 0:
+        batch_steps = eval_steps
+        batch_loss = train_loss_eval
 
     if has_sym_loss:
         # Two subplots: task loss and symmetry loss
@@ -287,10 +327,9 @@ def plot_loss_curves(history, save_path):
         
         # Left: Task loss
         ax = axes[0]
-        ax.plot(steps, train_loss, color='tab:blue', alpha=0.25, linewidth=1, label='Train (step)')
-        ax.plot(steps, val_loss, color='tab:orange', alpha=0.25, linewidth=1, label='Val (step)')
-        ax.plot((epoch_vals + 1) * steps_per_epoch, epoch_train, color='tab:blue', linewidth=2, label='Train (epoch)')
-        ax.plot((epoch_vals + 1) * steps_per_epoch, epoch_val, color='tab:orange', linewidth=2, label='Val (epoch)')
+        ax.plot(batch_steps, batch_loss, color='tab:blue', alpha=0.3, linewidth=0.5, label='Train (batch)')
+        ax.plot(eval_steps, train_loss_eval, color='tab:blue', linewidth=2, label='Train (eval)')
+        ax.plot(eval_steps, val_loss, color='tab:orange', linewidth=2, label='Val (eval)')
         ax.set_yscale('log')
         ax.set_xlabel('Step')
         ax.set_ylabel('Task Loss (MSE)')
@@ -300,13 +339,24 @@ def plot_loss_curves(history, save_path):
         
         # Right: Symmetry loss
         ax = axes[1]
-        epoch_sym = np.array([sym_loss[epoch_idx == e].mean() for e in epoch_vals])
-        ax.plot(steps, sym_loss, color='tab:green', alpha=0.25, linewidth=1, label='Sym Loss (step)')
-        ax.plot((epoch_vals + 1) * steps_per_epoch, epoch_sym, color='tab:green', linewidth=2, label='Sym Loss (epoch)')
+        ax.plot(batch_steps, batch_sym_loss, color='tab:blue', alpha=0.3, linewidth=0.5, label='Train (batch)')
+        ax.plot(eval_steps, train_sym_loss, color='tab:blue', linewidth=2, label='Train (eval)')
+        ax.plot(eval_steps, val_sym_loss, color='tab:orange', linewidth=2, label='Val (eval)')
         ax.set_yscale('log')
         ax.set_xlabel('Step')
-        ax.set_ylabel('Symmetry Loss (Orbit Variance)')
-        ax.set_title('Symmetry Loss')
+        ax.set_ylabel('Orbit Variance')
+        
+        # Build symmetry loss title with penalty info
+        sym_title = sym_penalty_name if sym_penalty_name else 'Symmetry Loss'
+        sym_subtitle_parts = []
+        if sym_layers:
+            layers_str = ', '.join(str(l) for l in sym_layers)
+            sym_subtitle_parts.append(f'layers=[{layers_str}]')
+        if lambda_sym > 0:
+            sym_subtitle_parts.append(f'λ={lambda_sym}')
+        if sym_subtitle_parts:
+            sym_title += f'\n({", ".join(sym_subtitle_parts)})'
+        ax.set_title(sym_title)
         ax.legend()
         ax.grid(True, alpha=0.3)
         
@@ -315,10 +365,9 @@ def plot_loss_curves(history, save_path):
     else:
         # Single plot: task loss only
         fig, ax = plt.subplots(figsize=(8, 5))
-        ax.plot(steps, train_loss, color='tab:blue', alpha=0.25, linewidth=1, label='Train (step)')
-        ax.plot(steps, val_loss, color='tab:orange', alpha=0.25, linewidth=1, label='Val (step)')
-        ax.plot((epoch_vals + 1) * steps_per_epoch, epoch_train, color='tab:blue', linewidth=2, label='Train (epoch)')
-        ax.plot((epoch_vals + 1) * steps_per_epoch, epoch_val, color='tab:orange', linewidth=2, label='Val (epoch)')
+        ax.plot(batch_steps, batch_loss, color='tab:blue', alpha=0.3, linewidth=0.5, label='Train (batch)')
+        ax.plot(eval_steps, train_loss_eval, color='tab:blue', linewidth=2, label='Train (eval)')
+        ax.plot(eval_steps, val_loss, color='tab:orange', linewidth=2, label='Val (eval)')
         ax.set_yscale('log')
         ax.set_xlabel('Step')
         ax.set_ylabel('Loss')

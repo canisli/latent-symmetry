@@ -11,7 +11,9 @@ from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface, plot_run_summary
 from latsym.metrics import get_metric, list_metrics
-from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_h_vs_layer, plot_rsl_vs_layer, plot_sl_vs_layer
+from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_h_vs_layer
+from latsym.metrics.rsl_metric import plot_rsl_vs_layer
+from latsym.metrics.sl_metric import plot_sl_vs_layer
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
