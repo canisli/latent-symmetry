@@ -12,6 +12,7 @@ from latsym.metrics import get_metric
 from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_vs_layer, plot_Q_h_vs_layer
 from latsym.metrics.rsl_metric import plot_rsl_vs_layer
 from latsym.metrics.sl_metric import plot_sl_vs_layer
+from latsym.metrics.mi_metric import compute_oracle_MI
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -176,6 +177,49 @@ def main(cfg: DictConfig):
             print(f"Setting reference data for periodic PCA (refit_interval={symmetry_penalty.refit_interval})")
             symmetry_penalty.set_reference_data(X_train)
     
+    # Setup dynamics mode for creating training GIFs
+    dynamics_mode = cfg.train.get('dynamics_mode', False)
+    dynamics_interval = cfg.train.get('dynamics_interval', 10)
+    frame_callback = None
+    
+    if dynamics_mode:
+        dynamics_dir = output_dir / 'dynamics_frames'
+        dynamics_dir.mkdir(exist_ok=True)
+        print(f"Dynamics mode enabled: saving frames every {dynamics_interval} steps to {dynamics_dir}")
+        
+        # Get data tensors for metric computation
+        X_full, y_full = full_dataset.get_numpy()
+        X_tensor = torch.tensor(X_full, dtype=torch.float32)
+        y_tensor = torch.tensor(y_full, dtype=torch.float32).unsqueeze(1) if y_full.ndim == 1 else torch.tensor(y_full, dtype=torch.float32)
+        
+        # Pre-compute oracle Q (fast - just variance computation)
+        oracle_Q = compute_oracle_Q(X_tensor, y_tensor, full_dataset.scalar_field_fn, n_rotations=32, device=device)
+        
+        # Get metric configs
+        q_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
+        run_name = cfg.experiment.get('name', None)
+        total_steps = cfg.train.total_steps
+        
+        def make_dynamics_frame(step: int, model_snapshot: nn.Module, history: dict):
+            """Generate a summary frame at the current training step."""
+            # Compute Q metric only (MI is too slow - trains a classifier each time)
+            q_metric = get_metric("Q", **q_cfg)
+            Q_values = q_metric.compute(model_snapshot, X_tensor, device=device)
+            
+            # Generate frame with fixed x-axis
+            frame_title = f"{run_name} (step {step})" if run_name else f"Step {step}"
+            plot_run_summary(
+                history, Q_values, oracle_Q, model_snapshot, full_dataset, device,
+                dynamics_dir / f'frame_{step:06d}.png',
+                run_name=frame_title,
+                MI_values=None,
+                oracle_MI=None,
+                xlim=(0, total_steps),
+            )
+            plt.close('all')
+        
+        frame_callback = make_dynamics_frame
+    
     history = train_loop(
         model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
         cfg.train.total_steps, cfg.train.log_interval, cfg.train.eval_interval,
@@ -184,6 +228,8 @@ def main(cfg: DictConfig):
         lambda_sym=lambda_sym,
         sym_layers=sym_layers,
         n_augmentations=n_augmentations,
+        frame_callback=frame_callback,
+        frame_interval=dynamics_interval,
     )
     
     print(f"\nFinal Train MSE: {history['train_loss'][-1]:.6f}")
@@ -191,6 +237,21 @@ def main(cfg: DictConfig):
     print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
     if lambda_sym > 0 and sym_layers:
         print(f"Final Sym Loss (batch): {history['batch_sym_loss'][-1]:.6f}")
+    
+    # Create GIF and MP4 from dynamics frames if enabled
+    if dynamics_mode:
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+        from make_gif import create_movie
+        gif_path, mp4_path = create_movie(
+            input_dir=dynamics_dir,
+            pattern="frame_*.png",
+            duration=100,
+            sort_by="name",
+        )
+        print(f"Created dynamics movie: {gif_path}")
+        if mp4_path:
+            print(f"Created dynamics movie: {mp4_path}")
     
     best_model_path = output_dir / 'model_best.pt'
     if best_model_path.exists():

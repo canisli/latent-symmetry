@@ -2,13 +2,13 @@
 
 # Optimization
 batch_size: 64
-total_steps: 10000
+total_steps: 1000
 learning_rate: 1.0e-4
 weight_decay: 0.0
 
 # Scheduler (optional cosine annealing)
 use_scheduler: true
-warmup_steps: 100
+warmup_steps: 0      # Set to 0 to disable warmup
 
 # Logging
 log_interval: 100     # Log every N steps
@@ -20,5 +20,15 @@ save_best: true       # Save best model by val loss
 # Symmetry penalty
 lambda_sym: 0.0              # Weight for symmetry penalty (0 = disabled)
 sym_layers: []               # List of layers to penalize (1-indexed, -1 for output)
-sym_penalty_type: "raw"      # "raw" (RawOrbitVariancePenalty) or "pca" (PCAOrbitVariancePenalty)
+sym_penalty_type: "N_h"      # Options: "N_h", "N_z", "Q_h", "Q_z", "periodic_pca", "ema_pca"
+                             #   N_h: Numerator only, raw activations
+                             #   N_z: Numerator only, PCA-projected (per-batch)
+                             #   Q_h: Full ratio (numerator/denominator), raw activations
+                             #   Q_z: Full ratio (numerator/denominator), PCA-projected
+                             #   periodic_pca: Re-fits PCA every N steps
+                             #   ema_pca: EMA statistics for mean/covariance
 n_augmentations_train: 4     # Number of rotation pairs per sample for penalty
+
+# Dynamics visualization (for creating training GIFs)
+dynamics_mode: false          # Produce summary frames during training
+dynamics_interval: 10         # Steps between dynamics frames

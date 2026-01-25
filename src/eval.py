@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -76,9 +78,12 @@ def plot_run_summary(
     device: torch.device,
     save_path: Path,
     run_name: str = None,
+    MI_values: dict = None,
+    oracle_MI: float = None,
+    xlim: tuple = None,
 ):
     """
-    Create a combined summary plot with loss curves, Q metric, and regression surface.
+    Create a combined summary plot with loss curves, Q/MI metrics, and regression surface.
     
     Mosaic layout:
         AACCC
@@ -86,7 +91,7 @@ def plot_run_summary(
     
     Where:
         A = Loss plot (spans 2 columns)
-        B = Q plot (spans 2 columns)
+        B = Q and MI metrics (grouped bar chart, spans 2 columns)
         C = Regression surface panels (2x2 grid with 3 panels + 1 empty, wider aspect)
     
     Args:
@@ -98,6 +103,10 @@ def plot_run_summary(
         device: Torch device.
         save_path: Path to save the combined figure.
         run_name: Optional run name for title.
+        MI_values: Optional dictionary mapping layer names to MI values.
+        oracle_MI: Optional oracle MI value.
+        xlim: Optional tuple (xmin, xmax) for fixed x-axis limits on loss plot.
+              Useful for creating animation frames with consistent axes.
     """
     # Create figure with mosaic layout: 2 rows x 4 columns with width ratios
     fig = plt.figure(figsize=(16, 8))
@@ -139,26 +148,55 @@ def plot_run_summary(
         ax_loss.set_xlabel('Step')
         ax_loss.set_ylabel('Loss')
     ax_loss.set_title('Training and Validation Loss')
+    if xlim is not None:
+        ax_loss.set_xlim(xlim)
     
-    # === B: Q metric (bottom left, spans cols 0-1) ===
-    ax_q = fig.add_subplot(gs[1, :2])
+    # === B: Q and MI metrics (bottom left, spans cols 0-1) ===
+    ax_metrics = fig.add_subplot(gs[1, :2])
+    
+    # Build layer list (without oracle for now)
     layers = list(Q_values.keys())
-    values = list(Q_values.values())
+    q_vals = list(Q_values.values())
+    
+    # Get MI values if provided
+    has_mi = MI_values is not None and len(MI_values) > 0
+    if has_mi:
+        mi_vals = [MI_values.get(layer, 0) for layer in layers]
+    
+    # Add oracle values
     if oracle_Q is not None:
         layers = layers + ['oracle']
-        values = values + [oracle_Q]
+        q_vals = q_vals + [oracle_Q]
+        if has_mi:
+            mi_vals = mi_vals + [oracle_MI if oracle_MI is not None else 0]
     
-    x = range(len(layers))
-    colors = ['steelblue'] * (len(layers) - 1) + ['green'] if oracle_Q is not None else ['steelblue'] * len(layers)
+    x = np.arange(len(layers))
     
-    ax_q.bar(x, values, color=colors, edgecolor='black')
-    ax_q.set_xticks(x)
-    ax_q.set_xticklabels(layers, rotation=45, ha='right', fontsize='small')
-    ax_q.set_xlabel('Layer')
-    ax_q.set_ylabel('Q')
-    ax_q.set_title('SO(2) Invariance Metric by Layer')
-    ax_q.set_ylim(bottom=0)
-    ax_q.grid(axis='y', alpha=0.3)
+    if has_mi:
+        # Grouped bar chart with Q and MI
+        width = 0.35
+        bars_q = ax_metrics.bar(x - width/2, q_vals, width, label='Q', color='steelblue', edgecolor='black')
+        bars_mi = ax_metrics.bar(x + width/2, mi_vals, width, label='MI', color='darkorange', edgecolor='black')
+        
+        # Color oracle bars green
+        if oracle_Q is not None:
+            bars_q[-1].set_color('green')
+            bars_mi[-1].set_color('forestgreen')
+        
+        ax_metrics.legend(fontsize='small', loc='upper right')
+        ax_metrics.set_title('SO(2) Invariance Metrics by Layer (Q and MI)')
+    else:
+        # Just Q bars (original behavior)
+        colors = ['steelblue'] * (len(layers) - 1) + ['green'] if oracle_Q is not None else ['steelblue'] * len(layers)
+        ax_metrics.bar(x, q_vals, color=colors, edgecolor='black')
+        ax_metrics.set_title('SO(2) Invariance Metric by Layer')
+    
+    ax_metrics.set_xticks(x)
+    ax_metrics.set_xticklabels(layers, rotation=45, ha='right', fontsize='small')
+    ax_metrics.set_xlabel('Layer')
+    ax_metrics.set_ylabel('Metric Value')
+    ax_metrics.set_ylim(bottom=0)
+    ax_metrics.grid(axis='y', alpha=0.3)
     
     # === C: Regression surfaces (2x2 grid in cols 2-3) ===
     model.eval()
@@ -183,11 +221,35 @@ def plot_run_summary(
     true_masked = np.ma.masked_where(mask, true_field)
     error_masked = np.ma.masked_where(mask, preds - true_field)
     
+    # Compute orbit-averaged prediction (average over angles for each radius)
+    n_radii = 100
+    n_angles = 64
+    radii_samples = np.linspace(r_min, r_max, n_radii)
+    angles_samples = np.linspace(0, 2 * np.pi, n_angles, endpoint=False)
+    
+    orbit_means = []
+    with torch.no_grad():
+        for r in radii_samples:
+            # Sample points around this orbit
+            xs = r * np.cos(angles_samples)
+            ys = r * np.sin(angles_samples)
+            orbit_pts = torch.tensor(np.c_[xs, ys], dtype=torch.float32).to(device)
+            orbit_preds = model(orbit_pts).cpu().numpy().flatten()
+            orbit_means.append(orbit_preds.mean())
+    orbit_means = np.array(orbit_means)
+    
+    # Compute true radial function for comparison
+    true_radial = dataset.scalar_field_fn(radii_samples, np.zeros_like(radii_samples), radii_samples)
+    
+    # Compute area-weighted mean of true function (with respect to disk measure: r dr dθ)
+    # Mean = ∫ f(r) r dr / ∫ r dr
+    true_mean = np.trapezoid(true_radial * radii_samples, radii_samples) / np.trapezoid(radii_samples, radii_samples)
+    
     vmin, vmax = true_masked.min(), true_masked.max()
     
-    # C panels in 2x2 arrangement: (0,2)=Predicted, (0,3)=True, (1,2)=Error, (1,3)=empty
+    # C panels in 2x2 arrangement: (0,2)=Predicted, (0,3)=True, (1,2)=Orbit Avg, (1,3)=Error
     
-    # Predicted (top middle)
+    # Predicted (top left of C area)
     ax_pred = fig.add_subplot(gs[0, 2])
     cf_pred = ax_pred.contourf(xx, yy, preds_masked, levels=50, cmap='viridis', vmin=vmin, vmax=vmax)
     plt.colorbar(cf_pred, ax=ax_pred)
@@ -198,7 +260,7 @@ def plot_run_summary(
     ax_pred.set_title('Predicted')
     ax_pred.set_aspect('equal')
     
-    # True (top right)
+    # True (top right of C area)
     ax_true = fig.add_subplot(gs[0, 3])
     cf_true = ax_true.contourf(xx, yy, true_masked, levels=50, cmap='viridis', vmin=vmin, vmax=vmax)
     plt.colorbar(cf_true, ax=ax_true)
@@ -209,8 +271,19 @@ def plot_run_summary(
     ax_true.set_title('True')
     ax_true.set_aspect('equal')
     
-    # Error (bottom middle)
-    ax_err = fig.add_subplot(gs[1, 2])
+    # Orbit Average as 1D radial plot (bottom left of C area)
+    ax_orbit = fig.add_subplot(gs[1, 2])
+    ax_orbit.plot(radii_samples, true_radial, 'k-', linewidth=2, label='True f(r)')
+    ax_orbit.plot(radii_samples, orbit_means, 'b-', linewidth=2, label='Orbit Avg')
+    ax_orbit.axhline(y=true_mean, color='gray', linestyle='--', linewidth=1.5, label=f'Mean = {true_mean:.3f}')
+    ax_orbit.set_xlabel('r')
+    ax_orbit.set_ylabel('f(r)')
+    ax_orbit.set_title('Radial Function')
+    ax_orbit.legend(fontsize='small')
+    ax_orbit.grid(True, alpha=0.3)
+    
+    # Error (bottom right of C area)
+    ax_err = fig.add_subplot(gs[1, 3])
     max_err = max(abs(error_masked.min()), abs(error_masked.max()), 0.1)
     cf_err = ax_err.contourf(xx, yy, error_masked, levels=50, cmap='RdBu_r', vmin=-max_err, vmax=max_err)
     plt.colorbar(cf_err, ax=ax_err)
@@ -221,9 +294,9 @@ def plot_run_summary(
     ax_err.set_title('Error')
     ax_err.set_aspect('equal')
     
-    # (1,3) is intentionally left empty
-    
-    plt.tight_layout()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*tight_layout.*")
+        plt.tight_layout()
     fig.subplots_adjust(top=0.93)
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()

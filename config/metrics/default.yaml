@@ -3,8 +3,9 @@
 enabled:
   - Q
   - Q_h
-  - RSL
-  - SL
+  # - RSL
+  # - SL
+  # - MI
 
 # Metric-specific parameters
 Q:
@@ -20,3 +21,12 @@ RSL:
 
 SL:
   n_rotations: 32
+
+MI:
+  K: 16                          # Number of discrete angles
+  classifier_hidden: [512, 512, 256]  # Classifier architecture (deeper/wider)
+  classifier_steps: 3000         # Training steps (increased for convergence)
+  lr: 0.001                      # Classifier learning rate
+  batch_size: 256                # Batch size
+  test_fraction: 0.2             # Fraction for test set
+  n_pairs_per_point: 16          # Number of (θ_1, θ_2) pairs per x (more data)

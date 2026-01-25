@@ -13,9 +13,10 @@ experiment:
   runs_file: "config/runs/default.yaml"  # YAML file specifying batch runs
   
 # Output directory (Hydra will set this)
+# Format: datetime_penaltytype_lambda_layers (or datetime_none if no penalty)
 hydra:
   run:
-    dir: experiments/${now:%Y-%m-%d_%H-%M-%S}
+    dir: experiments/train/${now:%Y-%m-%d_%H-%M-%S}_${train.sym_penalty_type}_${train.lambda_sym}_${train.sym_layers}
   sweep:
-    dir: experiments/sweeps/${now:%Y-%m-%d_%H-%M-%S}
+    dir: experiments/train/sweeps/${now:%Y-%m-%d_%H-%M-%S}
     subdir: ${hydra.job.num}

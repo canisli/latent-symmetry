@@ -25,6 +25,7 @@ from .plotting import TrainingInfo, plot_metric_vs_layer
 from . import q_metric
 from . import rsl_metric
 from . import sl_metric
+from . import mi_metric
 
 __all__ = [
     # Registry functions

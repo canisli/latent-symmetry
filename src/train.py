@@ -151,6 +151,8 @@ def train_loop(
     lambda_sym: float = 0.0,
     sym_layers: Optional[List[int]] = None,
     n_augmentations: int = 4,
+    frame_callback: Optional[Callable[[int, nn.Module, Dict], None]] = None,
+    frame_interval: int = 10,
 ) -> Dict[str, list]:
     """
     Main training loop for regression with optional symmetry penalty.
@@ -172,6 +174,8 @@ def train_loop(
         lambda_sym: Weight for symmetry penalty (0 = disabled).
         sym_layers: List of layer indices to penalize.
         n_augmentations: Number of rotation pairs per sample.
+        frame_callback: Optional callback(step, model, history) for dynamics visualization.
+        frame_interval: Steps between frame_callback invocations.
     
     Returns:
         Dictionary of training metrics history.
@@ -222,6 +226,10 @@ def train_loop(
         
         if scheduler is not None:
             scheduler.step()
+        
+        # Frame callback for dynamics visualization
+        if frame_callback is not None and (step + 1) % frame_interval == 0:
+            frame_callback(step + 1, model, history)
         
         # Evaluation
         if step % eval_interval == 0 or step == total_steps - 1:

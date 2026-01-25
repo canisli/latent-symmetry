@@ -12,8 +12,9 @@ from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface, plot_run_summary
 from latsym.metrics import get_metric, list_metrics
 from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_h_vs_layer
-from latsym.metrics.rsl_metric import plot_rsl_vs_layer
-from latsym.metrics.sl_metric import plot_sl_vs_layer
+from latsym.metrics.rsl_metric import compute_oracle_RSL, plot_rsl_vs_layer
+from latsym.metrics.sl_metric import compute_oracle_SL, plot_sl_vs_layer
+from latsym.metrics.mi_metric import compute_oracle_MI, plot_mi_vs_layer
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -141,10 +142,21 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         sl_metric = get_metric("SL", **sl_cfg)
         SL_values = sl_metric.compute(model, X, device=device)
         
-        # Compute oracle Q
+        # Compute MI metric (mutual information)
+        mi_cfg = OmegaConf.to_container(cfg.metrics.get("MI", {}), resolve=True)
+        mi_metric = get_metric("MI", **mi_cfg)
+        MI_values = mi_metric.compute(model, X, device=device)
+        
+        # Compute oracle values for all metrics
         oracle_Q = compute_oracle_Q(X, y, scalar_field_fn, n_rotations=32, device=device)
+        oracle_RSL = compute_oracle_RSL(X, y, scalar_field_fn, n_rotations=32, device=device)
+        oracle_SL = compute_oracle_SL(X, y, scalar_field_fn, n_rotations=32, device=device)
+        oracle_MI = compute_oracle_MI(X, y, scalar_field_fn, K=mi_cfg.get('K', 16), device=device)
         
         print(f"  Oracle Q = {oracle_Q:.4f}")
+        print(f"  Oracle RSL = {oracle_RSL:.4f}")
+        print(f"  Oracle SL = {oracle_SL:.6f}")
+        print(f"  Oracle MI = {oracle_MI:.4f}")
         print(f"  Q values by layer:")
         for layer, val in Q_values.items():
             print(f"    {layer}: Q = {val:.4f}")
@@ -157,11 +169,14 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         print(f"  SL values by layer:")
         for layer, val in SL_values.items():
             print(f"    {layer}: SL = {val:.6f}")
+        print(f"  MI values by layer:")
+        for layer, val in MI_values.items():
+            print(f"    {layer}: MI = {val:.4f}")
         
         # Save artifacts if output_dir provided
         if not use_temp:
             # Save metric values
-            all_metric_values = {"Q": Q_values, "Q_h": Q_h_values, "RSL": RSL_values, "SL": SL_values}
+            all_metric_values = {"Q": Q_values, "Q_h": Q_h_values, "RSL": RSL_values, "SL": SL_values, "MI": MI_values}
             with open(save_dir / 'metric_values.json', 'w') as f:
                 json.dump(all_metric_values, f, indent=2)
             
@@ -172,10 +187,13 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             plot_Q_h_vs_layer(Q_h_values, save_dir / 'Q_h_vs_layer.png', run_name=name)
             
             # Save RSL plot
-            plot_rsl_vs_layer(RSL_values, save_dir / 'RSL_vs_layer.png', run_name=name)
+            plot_rsl_vs_layer(RSL_values, save_dir / 'RSL_vs_layer.png', oracle_RSL=oracle_RSL, run_name=name)
             
             # Save SL plot
-            plot_sl_vs_layer(SL_values, save_dir / 'SL_vs_layer.png', run_name=name)
+            plot_sl_vs_layer(SL_values, save_dir / 'SL_vs_layer.png', oracle_SL=oracle_SL, run_name=name)
+            
+            # Save MI plot
+            plot_mi_vs_layer(MI_values, save_dir / 'MI_vs_layer.png', oracle_MI=oracle_MI, run_name=name)
             
             # Save loss curves if we trained
             if cfg.train.total_steps > 0:
@@ -184,15 +202,17 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             # Save regression surface
             plot_regression_surface(model, full_dataset, save_dir / 'regression_surface.png', device)
             
-            # Save combined summary plot (Q_h is excluded - only Q is shown)
+            # Save combined summary plot (Q and MI shown, Q_h excluded)
             plot_run_summary(
                 history, Q_values, oracle_Q, model, full_dataset, device,
-                save_dir / 'summary.png', run_name=name
+                save_dir / 'summary.png', run_name=name,
+                MI_values=MI_values, oracle_MI=oracle_MI
             )
             
             plt.close('all')
         
-        return Q_values, oracle_Q, Q_h_values, RSL_values, SL_values, history
+        oracles = {'Q': oracle_Q, 'RSL': oracle_RSL, 'SL': oracle_SL, 'MI': oracle_MI}
+        return Q_values, oracles, Q_h_values, RSL_values, SL_values, MI_values, history
         
     finally:
         if temp_ctx is not None:
@@ -263,7 +283,7 @@ def run_batch_mode(cfg: DictConfig, output_dir: Path, device: torch.device):
         run_dir = output_dir / run_name
         
         # Run the experiment
-        Q_values, oracle_Q, Q_h_values, RSL_values, SL_values, history = run_single_field(
+        Q_values, oracles, Q_h_values, RSL_values, SL_values, MI_values, history = run_single_field(
             run_cfg, field_fn, device, 
             output_dir=run_dir, 
             name=run_name
