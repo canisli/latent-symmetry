@@ -150,6 +150,7 @@ def main(cfg: DictConfig):
     if outdir is not None:
         # Create timestamped subfolder within the specified parent directory
         from datetime import datetime
+        import shutil
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         penalty_type = cfg.train.get('sym_penalty_type', 'none')
         lambda_sym = cfg.train.get('lambda_sym', 0.0)
@@ -163,10 +164,22 @@ def main(cfg: DictConfig):
         output_dir = parent_dir / subfolder
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Remove Hydra's default file handlers and add our own
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+                root_logger.removeHandler(handler)
+        
         # Add file handler to log to our custom output directory
         file_handler = logging.FileHandler(output_dir / 'train.log')
         file_handler.setFormatter(logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'))
-        logging.getLogger().addHandler(file_handler)
+        root_logger.addHandler(file_handler)
+        
+        # Remove the empty Hydra output directory
+        hydra_output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+        if hydra_output_dir.exists() and hydra_output_dir != output_dir:
+            shutil.rmtree(hydra_output_dir, ignore_errors=True)
     else:
         output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     

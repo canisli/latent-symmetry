@@ -26,7 +26,7 @@ def train_step(
     sym_layers: Optional[List[int]] = None,
     n_augmentations: int = 4,
     compute_grad_alignment: bool = False,
-) -> Tuple[float, float, Optional[float]]:
+) -> Tuple[float, float, Optional[float], Optional[float], Optional[float]]:
     """
     Single training step with optional symmetry penalty.
     
@@ -44,8 +44,8 @@ def train_step(
             task and symmetry gradients (slower, for diagnostics).
     
     Returns:
-        Tuple of (task_loss, sym_loss, grad_cosine_sim) as floats.
-        grad_cosine_sim is None if compute_grad_alignment=False or no sym penalty.
+        Tuple of (task_loss, sym_loss, grad_cosine_sim, task_grad_norm, sym_grad_norm).
+        Last three are None if compute_grad_alignment=False or no sym penalty.
     """
     model.train()
     X, y = batch
@@ -57,42 +57,46 @@ def train_step(
     
     sym_loss_value = 0.0
     grad_cosine_sim = None
+    task_grad_norm = None
+    sym_grad_norm = None
     
-    if symmetry_penalty is not None and lambda_sym > 0 and sym_layers:
+    has_sym_penalty = symmetry_penalty is not None and lambda_sym > 0 and sym_layers
+    
+    if has_sym_penalty:
         sym_loss = symmetry_penalty.compute_total(
             model, X, sym_layers, n_augmentations, device
         )
         sym_loss_value = sym_loss.item()
-        
-        if compute_grad_alignment:
-            # Compute task gradient
-            task_loss.backward(retain_graph=True)
-            task_grad = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
-            
-            # Compute symmetry gradient
-            optimizer.zero_grad()
-            sym_loss.backward(retain_graph=True)
-            sym_grad = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
-            
-            # Cosine similarity
-            task_norm = task_grad.norm()
-            sym_norm = sym_grad.norm()
-            if task_norm > 0 and sym_norm > 0:
-                grad_cosine_sim = (task_grad @ sym_grad / (task_norm * sym_norm)).item()
-            else:
-                grad_cosine_sim = 0.0
-            
-            # Now compute total gradient for actual update
-            optimizer.zero_grad()
-        
         total_loss = task_loss + lambda_sym * sym_loss
     else:
         total_loss = task_loss
     
+    if compute_grad_alignment:
+        # Compute task gradient
+        task_loss.backward(retain_graph=True)
+        task_grad = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
+        task_grad_norm = task_grad.norm().item()
+        
+        if has_sym_penalty:
+            # Compute symmetry gradient
+            optimizer.zero_grad()
+            sym_loss.backward(retain_graph=True)
+            sym_grad = torch.cat([p.grad.flatten() for p in model.parameters() if p.grad is not None])
+            sym_grad_norm = sym_grad.norm().item()
+            
+            # Cosine similarity
+            if task_grad_norm > 1e-12 and sym_grad_norm > 1e-12:
+                grad_cosine_sim = (task_grad @ sym_grad / (task_grad_norm * sym_grad_norm)).item()
+            else:
+                grad_cosine_sim = 0.0  # Undefined when one gradient is zero
+        
+        # Compute total gradient for actual update
+        optimizer.zero_grad()
+    
     total_loss.backward()
     optimizer.step()
     
-    return task_loss.item(), sym_loss_value, grad_cosine_sim
+    return task_loss.item(), sym_loss_value, grad_cosine_sim, task_grad_norm, sym_grad_norm
 
 
 @torch.no_grad()
@@ -218,6 +222,9 @@ def train_loop(
         'batch_sym_loss': [],     # Per-batch symmetry loss
         'grad_align_step': [],    # Steps where gradient alignment was computed
         'grad_align': [],         # Cosine similarity between task and sym gradients
+        'task_grad_norm': [],     # Norm of task loss gradient
+        'sym_grad_norm': [],      # Norm of symmetry loss gradient
+        'delta_task_loss': [],    # Change in task loss: L(step) - L(step-1)
         'eval_step': [],          # Step number for each evaluation
         'train_loss': [],         # Full-dataset task loss evaluation
         'val_loss': [],
@@ -226,6 +233,7 @@ def train_loop(
         'val_mae': [],
         'lr': [],
     }
+    prev_task_loss = None  # For computing delta
     steps_per_epoch = len(train_loader)
     
     best_val_loss = float('inf')
@@ -242,17 +250,14 @@ def train_loop(
             train_iter = iter(train_loader)
             batch = next(train_iter)
         
-        # Decide whether to compute gradient alignment this step
+        # Decide whether to compute gradient info this step
         compute_grad_align = (
             grad_align_interval > 0 and 
-            (step + 1) % grad_align_interval == 0 and
-            symmetry_penalty is not None and 
-            lambda_sym > 0 and 
-            sym_layers
+            (step + 1) % grad_align_interval == 0
         )
         
         # Training step
-        task_loss, sym_loss, grad_cos = train_step(
+        task_loss, sym_loss, grad_cos, task_grad_norm, sym_grad_norm = train_step(
             model, batch, loss_fn, optimizer, device,
             symmetry_penalty=symmetry_penalty,
             lambda_sym=lambda_sym,
@@ -266,10 +271,19 @@ def train_loop(
         history['batch_loss'].append(task_loss)
         history['batch_sym_loss'].append(sym_loss)
         
-        # Record gradient alignment if computed
-        if grad_cos is not None:
+        # Record task loss change (delta)
+        if prev_task_loss is not None:
+            history['delta_task_loss'].append(task_loss - prev_task_loss)
+        prev_task_loss = task_loss
+        
+        # Record gradient norms and alignment if computed
+        if task_grad_norm is not None:
             history['grad_align_step'].append(step + 1)
-            history['grad_align'].append(grad_cos)
+            history['task_grad_norm'].append(task_grad_norm)
+            # Only record sym grad norm and alignment if symmetry penalty is active
+            if sym_grad_norm is not None:
+                history['sym_grad_norm'].append(sym_grad_norm)
+                history['grad_align'].append(grad_cos)
         
         if scheduler is not None:
             scheduler.step()
@@ -434,18 +448,39 @@ def plot_loss_curves(
         lambda_sym: Lambda weight for symmetry penalty.
         field_name: Name of the scalar field used for training.
     """
-    # Check if we have gradient alignment data
+    # Check what data we have
     grad_align_steps = history.get('grad_align_step', [])
-    has_grad_align = len(grad_align_steps) > 0
+    task_grad_norm = history.get('task_grad_norm', [])
+    sym_grad_norm = history.get('sym_grad_norm', [])
+    grad_align = history.get('grad_align', [])
+    delta_task_loss = history.get('delta_task_loss', [])
+    batch_steps = history.get('batch_step', [])
     
+    has_task_grad = len(task_grad_norm) > 0
+    has_sym_grad = len(sym_grad_norm) > 0
+    has_grad_align = len(grad_align) > 0
+    has_delta = len(delta_task_loss) > 0
+    
+    # Count extra panels needed
+    extra_panels = []
+    if has_delta:
+        extra_panels.append('delta')
+    if has_task_grad:
+        extra_panels.append('grad_norms')
     if has_grad_align:
-        # Two rows: loss on top, gradient alignment on bottom
-        fig, axes = plt.subplots(2, 1, figsize=(10, 8), height_ratios=[2, 1])
+        extra_panels.append('grad_align')
+    
+    n_extra = len(extra_panels)
+    
+    # Create figure with appropriate number of panels
+    if n_extra > 0:
+        height_ratios = [2] + [1] * n_extra
+        fig, axes = plt.subplots(1 + n_extra, 1, figsize=(10, 5 + 2.5 * n_extra), height_ratios=height_ratios)
         ax_loss = axes[0]
-        ax_grad = axes[1]
+        extra_axes = {name: axes[i + 1] for i, name in enumerate(extra_panels)}
     else:
-        # Single plot
         fig, ax_loss = plt.subplots(figsize=(10, 5))
+        extra_axes = {}
     
     # Build suptitle with field name and training info
     suptitle_lines = []
@@ -460,19 +495,69 @@ def plot_loss_curves(
     if suptitle_lines:
         fig.suptitle('\n'.join(suptitle_lines), fontsize=11, fontweight='bold')
     
-    # Plot losses using shared function (no title on axes since we have suptitle)
+    # Plot losses using shared function
     plot_training_loss(ax_loss, history, lambda_sym=lambda_sym, title='Training and Validation Loss')
     
-    # Plot gradient alignment if available
-    if has_grad_align:
-        grad_align = np.array(history['grad_align'])
-        grad_align_steps = np.array(grad_align_steps)
+    # Plot task loss change (delta) if available
+    if 'delta' in extra_axes:
+        ax_delta = extra_axes['delta']
+        # delta_task_loss starts at step 2 (first difference)
+        delta_steps = np.array(batch_steps[1:len(delta_task_loss)+1])
+        delta_arr = np.array(delta_task_loss)
         
-        ax_grad.plot(grad_align_steps, grad_align, color='purple', linewidth=1, alpha=0.7)
+        # Smooth with rolling average for visibility
+        window = min(50, len(delta_arr) // 10) if len(delta_arr) > 100 else 1
+        if window > 1:
+            delta_smooth = np.convolve(delta_arr, np.ones(window)/window, mode='valid')
+            delta_steps_smooth = delta_steps[window-1:]
+            ax_delta.plot(delta_steps, delta_arr, color='gray', linewidth=0.3, alpha=0.5, label='ΔL_task (raw)')
+            ax_delta.plot(delta_steps_smooth, delta_smooth, color='tab:blue', linewidth=1.5, label=f'ΔL_task (smoothed, w={window})')
+        else:
+            ax_delta.plot(delta_steps, delta_arr, color='tab:blue', linewidth=1, label='ΔL_task')
+        
+        ax_delta.axhline(y=0, color='black', linestyle='--', linewidth=0.5)
+        ax_delta.set_xlabel('Step')
+        ax_delta.set_ylabel('ΔL_task')
+        ax_delta.set_title('Task Loss Change per Step: L(t) - L(t-1)')
+        ax_delta.legend(fontsize='x-small', loc='upper right')
+        ax_delta.grid(True, alpha=0.3)
+        
+        # Use symmetric y-limits centered on 0
+        max_abs = max(abs(delta_arr.min()), abs(delta_arr.max())) * 1.1
+        ax_delta.set_ylim(-max_abs, max_abs)
+    
+    # Plot gradient norms if available
+    if 'grad_norms' in extra_axes:
+        ax_norms = extra_axes['grad_norms']
+        grad_align_steps_arr = np.array(grad_align_steps)
+        task_grad_norm_arr = np.array(task_grad_norm)
+        
+        ax_norms.plot(grad_align_steps_arr, task_grad_norm_arr, color='tab:blue', linewidth=1, alpha=0.7, label='||∇L_task||')
+        
+        if has_sym_grad:
+            sym_grad_norm_arr = np.array(sym_grad_norm)
+            ax_norms.plot(grad_align_steps_arr, sym_grad_norm_arr, color='tab:green', linewidth=1, alpha=0.7, label='||∇L_sym||')
+            ax_norms.set_title('Gradient Norms: ||∇L_task|| and ||∇L_sym|| (unscaled by λ)')
+        else:
+            ax_norms.set_title('Task Gradient Norm: ||∇L_task||')
+        
+        ax_norms.set_yscale('log')
+        ax_norms.set_xlabel('Step')
+        ax_norms.set_ylabel('Gradient Norm')
+        ax_norms.legend(fontsize='x-small', loc='upper right')
+        ax_norms.grid(True, alpha=0.3)
+    
+    # Plot gradient alignment if available
+    if 'grad_align' in extra_axes:
+        ax_grad = extra_axes['grad_align']
+        grad_align_steps_arr = np.array(grad_align_steps)
+        grad_align_arr = np.array(grad_align)
+        
+        ax_grad.plot(grad_align_steps_arr, grad_align_arr, color='purple', linewidth=1, alpha=0.7)
         ax_grad.axhline(y=0, color='black', linestyle='--', linewidth=0.5)
         ax_grad.set_xlabel('Step')
         ax_grad.set_ylabel('Cosine Similarity')
-        ax_grad.set_title('Gradient Alignment (Task vs Symmetry)')
+        ax_grad.set_title('Gradient Alignment: cos(∇L_task, ∇L_sym)')
         ax_grad.set_ylim(-1.1, 1.1)
         ax_grad.grid(True, alpha=0.3)
         
@@ -482,5 +567,14 @@ def plot_loss_curves(
         ax_grad.legend(fontsize='x-small', loc='upper right')
     
     plt.tight_layout()
-    fig.subplots_adjust(top=0.88)
+    # Adjust top margin based on suptitle size
+    if suptitle_lines:
+        n_lines = len(suptitle_lines)
+        n_panels = 1 + n_extra
+        if n_panels >= 2:
+            top_margin = 0.92 - 0.02 * n_lines
+        else:
+            # Single plot needs more margin for suptitle to not overlap with plot title
+            top_margin = 0.85 - 0.03 * n_lines
+        fig.subplots_adjust(top=top_margin)
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
