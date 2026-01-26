@@ -22,6 +22,11 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 import json
+import sys
+import shlex
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def build_model(cfg: DictConfig) -> nn.Module:
@@ -37,6 +42,7 @@ def compute_and_plot_metrics(
     output_dir: Path,
     device: torch.device,
     run_name: str = None,
+    field_name: str = None,
     sym_penalty_type: str = None,
     sym_layers: list = None,
     lambda_sym: float = 0.0,
@@ -51,6 +57,7 @@ def compute_and_plot_metrics(
         output_dir: Directory to save plots and metrics.
         device: Torch device.
         run_name: Optional run name for plot titles.
+        field_name: Name of the scalar field used for training.
         sym_penalty_type: Type of symmetry penalty used during training.
         sym_layers: List of layers penalized during training.
         lambda_sym: Lambda value for symmetry penalty.
@@ -86,23 +93,23 @@ def compute_and_plot_metrics(
     # Compute oracle Q
     oracle_Q = compute_oracle_Q(X, y, full_dataset.scalar_field_fn, n_rotations=32, device=device)
     
-    # Print metrics
-    print(f"\n{'='*40}")
-    print("Metric Results")
-    print(f"{'='*40}")
-    print(f"Oracle Q = {oracle_Q:.4f}")
-    print(f"Q values by layer:")
+    # Log metrics
+    log.info(f"\n{'='*40}")
+    log.info("Metric Results")
+    log.info(f"{'='*40}")
+    log.info(f"Oracle Q = {oracle_Q:.4f}")
+    log.info(f"Q values by layer:")
     for layer, val in Q_values.items():
-        print(f"  {layer}: Q = {val:.4f}")
-    print(f"Q_h values by layer:")
+        log.info(f"  {layer}: Q = {val:.4f}")
+    log.info(f"Q_h values by layer:")
     for layer, val in Q_h_values.items():
-        print(f"  {layer}: Q_h = {val:.4f}")
-    print(f"RSL values by layer:")
+        log.info(f"  {layer}: Q_h = {val:.4f}")
+    log.info(f"RSL values by layer:")
     for layer, val in RSL_values.items():
-        print(f"  {layer}: RSL = {val:.4f}")
-    print(f"SL values by layer:")
+        log.info(f"  {layer}: RSL = {val:.4f}")
+    log.info(f"SL values by layer:")
     for layer, val in SL_values.items():
-        print(f"  {layer}: SL = {val:.6f}")
+        log.info(f"  {layer}: SL = {val:.6f}")
     
     # Save metric values
     all_metric_values = {
@@ -118,19 +125,19 @@ def compute_and_plot_metrics(
     # Save individual metric plots
     plot_Q_vs_layer(
         Q_values, output_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q, run_name=run_name,
-        sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
+        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
     )
     plot_Q_h_vs_layer(
         Q_h_values, output_dir / 'Q_h_vs_layer.png', run_name=run_name,
-        sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
+        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
     )
     plot_rsl_vs_layer(
         RSL_values, output_dir / 'RSL_vs_layer.png', run_name=run_name,
-        sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
+        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
     )
     plot_sl_vs_layer(
         SL_values, output_dir / 'SL_vs_layer.png', run_name=run_name,
-        sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
+        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
     )
     
     return all_metric_values, oracle_Q, Q_values
@@ -138,8 +145,39 @@ def compute_and_plot_metrics(
 
 @hydra.main(version_base=None, config_path="../config", config_name="config")
 def main(cfg: DictConfig):
-    print(OmegaConf.to_yaml(cfg))
-    output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+    # Determine output directory
+    outdir = cfg.train.get('outdir', None)
+    if outdir is not None:
+        # Create timestamped subfolder within the specified parent directory
+        from datetime import datetime
+        timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        penalty_type = cfg.train.get('sym_penalty_type', 'none')
+        lambda_sym = cfg.train.get('lambda_sym', 0.0)
+        sym_layers = cfg.train.get('sym_layers', [])
+        suffix = cfg.train.get('suffix', None)
+        subfolder = f"{timestamp}_{penalty_type}_{lambda_sym}_{sym_layers}"
+        if suffix:
+            subfolder = f"{subfolder}_{suffix}"
+        parent_dir = Path('experiments/train') / outdir
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = parent_dir / subfolder
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Add file handler to log to our custom output directory
+        file_handler = logging.FileHandler(output_dir / 'train.log')
+        file_handler.setFormatter(logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'))
+        logging.getLogger().addHandler(file_handler)
+    else:
+        output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
+    
+    log.info(OmegaConf.to_yaml(cfg))
+    
+    # Save config to output directory
+    OmegaConf.save(cfg, output_dir / 'config.yaml')
+    
+    # Save the exact command used to run this script
+    command = shlex.join([sys.executable] + sys.argv)
+    (output_dir / 'command.txt').write_text(command + '\n')
     
     seed = cfg.experiment.seed
     torch.manual_seed(seed)
@@ -165,16 +203,17 @@ def main(cfg: DictConfig):
     sym_layers = list(cfg.train.get('sym_layers', []))
     sym_penalty_type = cfg.train.get('sym_penalty_type', 'raw')
     n_augmentations = cfg.train.get('n_augmentations_train', 4)
+    stopgrad_denominator = cfg.train.get('stopgrad_denominator', True)
     
     symmetry_penalty = None
     if lambda_sym > 0 and sym_layers:
-        print(f"Using symmetry penalty: type={sym_penalty_type}, lambda={lambda_sym}, layers={sym_layers}")
-        symmetry_penalty = create_symmetry_penalty(sym_penalty_type)
+        log.info(f"Using symmetry penalty: type={sym_penalty_type}, lambda={lambda_sym}, layers={sym_layers}")
+        symmetry_penalty = create_symmetry_penalty(sym_penalty_type, stopgrad_denominator=stopgrad_denominator)
         
         # For periodic PCA penalty, set reference data for re-fitting
         if isinstance(symmetry_penalty, PeriodicPCAOrbitVariancePenalty):
             X_train = torch.cat([batch[0] for batch in train_loader], dim=0)
-            print(f"Setting reference data for periodic PCA (refit_interval={symmetry_penalty.refit_interval})")
+            log.info(f"Setting reference data for periodic PCA (refit_interval={symmetry_penalty.refit_interval})")
             symmetry_penalty.set_reference_data(X_train)
     
     # Setup dynamics mode for creating training GIFs
@@ -185,7 +224,7 @@ def main(cfg: DictConfig):
     if dynamics_mode:
         dynamics_dir = output_dir / 'dynamics_frames'
         dynamics_dir.mkdir(exist_ok=True)
-        print(f"Dynamics mode enabled: saving frames every {dynamics_interval} steps to {dynamics_dir}")
+        log.info(f"Dynamics mode enabled: saving frames every {dynamics_interval} steps to {dynamics_dir}")
         
         # Get data tensors for metric computation
         X_full, y_full = full_dataset.get_numpy()
@@ -197,8 +236,10 @@ def main(cfg: DictConfig):
         
         # Get metric configs
         q_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
-        run_name = cfg.experiment.get('name', None)
         total_steps = cfg.train.total_steps
+        
+        # Get field name for frame titles
+        field_name = type(full_dataset.scalar_field_fn).__name__
         
         def make_dynamics_frame(step: int, model_snapshot: nn.Module, history: dict):
             """Generate a summary frame at the current training step."""
@@ -207,18 +248,26 @@ def main(cfg: DictConfig):
             Q_values = q_metric.compute(model_snapshot, X_tensor, device=device)
             
             # Generate frame with fixed x-axis
-            frame_title = f"{run_name} (step {step})" if run_name else f"Step {step}"
             plot_run_summary(
                 history, Q_values, oracle_Q, model_snapshot, full_dataset, device,
                 dynamics_dir / f'frame_{step:06d}.png',
-                run_name=frame_title,
+                run_name=f"Step {step}",
                 MI_values=None,
                 oracle_MI=None,
                 xlim=(0, total_steps),
+                lambda_sym=lambda_sym,
+                field_name=field_name,
+                sym_penalty_type=sym_penalty_type,
+                sym_layers=sym_layers,
             )
             plt.close('all')
         
         frame_callback = make_dynamics_frame
+    
+    # Gradient alignment tracking (for barrier hypothesis testing)
+    grad_align_interval = cfg.train.get('grad_align_interval', 0)
+    if grad_align_interval > 0 and lambda_sym > 0 and sym_layers:
+        log.info(f"Computing gradient alignment every {grad_align_interval} steps")
     
     history = train_loop(
         model, train_loader, val_loader, loss_fn, optimizer, scheduler, device,
@@ -230,17 +279,17 @@ def main(cfg: DictConfig):
         n_augmentations=n_augmentations,
         frame_callback=frame_callback,
         frame_interval=dynamics_interval,
+        grad_align_interval=grad_align_interval,
     )
     
-    print(f"\nFinal Train MSE: {history['train_loss'][-1]:.6f}")
-    print(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
-    print(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
+    log.info(f"\nFinal Train MSE: {history['train_loss'][-1]:.6f}")
+    log.info(f"Final Val MSE: {history['val_loss'][-1]:.6f}")
+    log.info(f"Final Val MAE: {history['val_mae'][-1]:.4f}")
     if lambda_sym > 0 and sym_layers:
-        print(f"Final Sym Loss (batch): {history['batch_sym_loss'][-1]:.6f}")
+        log.info(f"Final Sym Loss (batch): {history['batch_sym_loss'][-1]:.6f}")
     
     # Create GIF and MP4 from dynamics frames if enabled
     if dynamics_mode:
-        import sys
         sys.path.insert(0, str(Path(__file__).parent))
         from make_gif import create_movie
         gif_path, mp4_path = create_movie(
@@ -249,13 +298,16 @@ def main(cfg: DictConfig):
             duration=100,
             sort_by="name",
         )
-        print(f"Created dynamics movie: {gif_path}")
+        log.info(f"Created dynamics movie: {gif_path}")
         if mp4_path:
-            print(f"Created dynamics movie: {mp4_path}")
+            log.info(f"Created dynamics movie: {mp4_path}")
     
     best_model_path = output_dir / 'model_best.pt'
     if best_model_path.exists():
         model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
+    
+    # Get field name from dataset
+    field_name = type(full_dataset.scalar_field_fn).__name__
     
     # Plot loss curves
     sym_penalty_name = type(symmetry_penalty).__name__ if symmetry_penalty else None
@@ -265,26 +317,38 @@ def main(cfg: DictConfig):
         sym_penalty_name=sym_penalty_name,
         sym_layers=sym_layers,
         lambda_sym=lambda_sym,
+        field_name=field_name,
     )
     
     # Plot regression surface
-    plot_regression_surface(model, full_dataset, output_dir / 'regression_surface.png', device)
+    plot_regression_surface(
+        model, full_dataset, output_dir / 'regression_surface.png', device,
+        field_name=field_name,
+        sym_penalty_type=sym_penalty_type,
+        sym_layers=sym_layers,
+        lambda_sym=lambda_sym,
+    )
     
     # Compute and plot all metrics
     run_name = cfg.experiment.get('name', None)
+    field_name = type(full_dataset.scalar_field_fn).__name__
     all_metrics, oracle_Q, Q_values = compute_and_plot_metrics(
         model, full_dataset, cfg, output_dir, device, run_name=run_name,
-        sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
+        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
     )
     
     # Create combined summary plot
     plot_run_summary(
         history, Q_values, oracle_Q, model, full_dataset, device,
-        output_dir / 'summary.png', run_name=run_name
+        output_dir / 'summary.png', run_name=run_name,
+        lambda_sym=lambda_sym,
+        field_name=field_name,
+        sym_penalty_type=sym_penalty_type,
+        sym_layers=sym_layers,
     )
     
     plt.close('all')
-    print(f"\nResults saved to: {output_dir}")
+    log.info(f"\nResults saved to: {output_dir}")
 
 
 if __name__ == "__main__":

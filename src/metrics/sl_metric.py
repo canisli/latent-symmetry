@@ -170,6 +170,7 @@ def plot_sl_vs_layer(
     save_path: Path = None,
     oracle_SL: float = None,
     run_name: str = None,
+    field_name: str = None,
     sym_penalty_type: str = None,
     sym_layers: list = None,
     lambda_sym: float = 0.0,
@@ -182,11 +183,13 @@ def plot_sl_vs_layer(
         save_path: Optional path to save the plot.
         oracle_SL: Optional oracle SL value to show as additional bar.
         run_name: Optional run name (unused, kept for API compatibility).
+        field_name: Name of the scalar field used for training.
         sym_penalty_type: Type of symmetry penalty used during training.
         sym_layers: List of layers penalized during training.
         lambda_sym: Lambda value for symmetry penalty.
     """
     training_info = TrainingInfo(
+        field_name=field_name,
         penalty_type=sym_penalty_type,
         layers=sym_layers,
         lambda_sym=lambda_sym,

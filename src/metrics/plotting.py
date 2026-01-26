@@ -10,16 +10,34 @@ from dataclasses import dataclass
 
 @dataclass
 class TrainingInfo:
-    """Information about symmetry penalty used during training."""
+    """Information about symmetry penalty and field used during training."""
+    field_name: Optional[str] = None
     penalty_type: Optional[str] = None
     layers: Optional[List[int]] = None
     lambda_sym: float = 0.0
+    
+    def format_suptitle(self) -> str:
+        """Format full suptitle with field name and training info."""
+        lines = []
+        
+        # Line 1: Field name
+        if self.field_name:
+            lines.append(f'Field = {self.field_name}')
+        
+        # Line 2: Training penalty info
+        if self.penalty_type and self.lambda_sym > 0 and self.layers:
+            layers_str = str(self.layers).replace(' ', '')
+            lines.append(f'Model trained with {self.penalty_type} penalty (layers={layers_str}, λ={self.lambda_sym})')
+        elif lines:  # Only add "no penalty" line if we have a field name
+            lines.append('Model trained without symmetry penalty')
+        
+        return '\n'.join(lines) if lines else ''
     
     def format_subtitle(self) -> Optional[str]:
         """Format training info as subtitle string, or None if no penalty was used."""
         if self.penalty_type and self.lambda_sym > 0 and self.layers:
             layers_str = str(self.layers).replace(' ', '')
-            return f'Model trained with {self.penalty_type} Penalty (layers={layers_str}, λ={self.lambda_sym})'
+            return f'Model trained with {self.penalty_type} penalty (layers={layers_str}, λ={self.lambda_sym})'
         return None
 
 
@@ -80,16 +98,14 @@ def plot_metric_vs_layer(
     axes[1].grid(axis='y', alpha=0.3)
     axes[1].set_title('Log')
     
-    # Set overall title with optional training info subtitle
-    title = f'{metric_name} by Layer'
+    # Set overall title with optional training info
     if training_info:
-        subtitle = training_info.format_subtitle()
-        if subtitle:
-            title += f': {subtitle}'
-    fig.suptitle(title)
+        suptitle = training_info.format_suptitle()
+        if suptitle:
+            fig.suptitle(suptitle, fontsize=11, fontweight='bold')
     
     plt.tight_layout()
-    fig.subplots_adjust(top=0.88)
+    fig.subplots_adjust(top=0.82)
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()

@@ -183,12 +183,15 @@ class Q_hPenalty(SymmetryPenalty):
     Mean and denominator computed fresh on each batch.
     """
     
-    def __init__(self, epsilon: float = 1e-8):
+    def __init__(self, epsilon: float = 1e-8, stopgrad_denominator: bool = True):
         """
         Args:
             epsilon: Small constant for numerical stability in division.
+            stopgrad_denominator: If True, stop gradient through denominator to prevent
+                the optimizer from inflating data variance. Default True.
         """
         self.epsilon = epsilon
+        self.stopgrad_denominator = stopgrad_denominator
     
     def compute(
         self,
@@ -202,12 +205,18 @@ class Q_hPenalty(SymmetryPenalty):
         N = data.shape[0]
         
         # Compute denominator: E[||h(x) - h(x')||²] from batch
-        with torch.no_grad():
+        def compute_denominator():
             h_batch = model.forward_with_intermediate(data, layer_idx)
             h_diff = h_batch.unsqueeze(0) - h_batch.unsqueeze(1)  # (N, N, D)
             h_diff_sq = (h_diff ** 2).sum(dim=-1)  # (N, N)
             mask = ~torch.eye(N, dtype=torch.bool, device=device)
-            denominator = h_diff_sq[mask].mean()
+            return h_diff_sq[mask].mean()
+        
+        if self.stopgrad_denominator:
+            with torch.no_grad():
+                denominator = compute_denominator()
+        else:
+            denominator = compute_denominator()
         
         # Compute numerator: E[||h(g1*x) - h(g2*x)||²]
         numerator = torch.tensor(0.0, device=device)
@@ -238,14 +247,17 @@ class Q_zPenalty(SymmetryPenalty):
     Mean, covariance, and denominator computed fresh on each batch.
     """
     
-    def __init__(self, explained_variance: float = 0.95, epsilon: float = 1e-8):
+    def __init__(self, explained_variance: float = 0.95, epsilon: float = 1e-8, stopgrad_denominator: bool = True):
         """
         Args:
             explained_variance: Fraction of variance to explain with PCA.
             epsilon: Small constant for numerical stability in division.
+            stopgrad_denominator: If True, stop gradient through denominator to prevent
+                the optimizer from inflating data variance. Default True.
         """
         self.explained_variance = explained_variance
         self.epsilon = epsilon
+        self.stopgrad_denominator = stopgrad_denominator
     
     def compute(
         self,
@@ -258,7 +270,7 @@ class Q_zPenalty(SymmetryPenalty):
         data = data.to(device)
         N = data.shape[0]
         
-        # Compute batch statistics and denominator (no grad)
+        # Compute PCA statistics (always no grad - eigendecomposition is expensive/unstable)
         with torch.no_grad():
             h_batch = model.forward_with_intermediate(data, layer_idx)
             mu = h_batch.mean(dim=0)
@@ -278,13 +290,21 @@ class Q_zPenalty(SymmetryPenalty):
                 k = (cumsum < self.explained_variance * total_var).sum().item() + 1
                 k = max(1, min(k, len(eigenvalues)))
                 U = eigenvectors[:, :k]
-            
-            # Compute z for batch and denominator
-            z_batch = (h_batch - mu) @ U
+        
+        # Compute denominator: E[||z(x) - z(x')||²]
+        def compute_denominator():
+            h_batch_denom = model.forward_with_intermediate(data, layer_idx)
+            z_batch = (h_batch_denom - mu) @ U
             z_diff = z_batch.unsqueeze(0) - z_batch.unsqueeze(1)  # (N, N, k)
             z_diff_sq = (z_diff ** 2).sum(dim=-1)  # (N, N)
             mask = ~torch.eye(N, dtype=torch.bool, device=device)
-            denominator = z_diff_sq[mask].mean()
+            return z_diff_sq[mask].mean()
+        
+        if self.stopgrad_denominator:
+            with torch.no_grad():
+                denominator = compute_denominator()
+        else:
+            denominator = compute_denominator()
         
         # Compute numerator: E[||z(g1*x) - z(g2*x)||²]
         numerator = torch.tensor(0.0, device=device)
@@ -550,22 +570,40 @@ def create_symmetry_penalty(penalty_type: str, **kwargs) -> SymmetryPenalty:
             - "periodic_pca": PeriodicPCAOrbitVariancePenalty (re-fits every N steps)
             - "ema_pca": EMAPCAOrbitVariancePenalty (EMA statistics)
         **kwargs: Additional arguments passed to the penalty constructor.
+            - stopgrad_denominator: For Q_h/Q_z, whether to stop gradient through denominator (default True).
+            - explained_variance: For PCA-based penalties, fraction of variance to explain (default 0.95).
+            - epsilon: For Q_h/Q_z, numerical stability constant (default 1e-8).
+            - refit_interval: For periodic_pca, steps between re-fits (default 100).
+            - ema_decay: For ema_pca, EMA decay factor (default 0.99).
     
     Returns:
         SymmetryPenalty instance.
     """
+    # Filter kwargs based on what each penalty type accepts
+    stopgrad_denominator = kwargs.pop('stopgrad_denominator', True)
+    
     if penalty_type == "N_h":
         return N_hPenalty()
     elif penalty_type == "N_z":
-        return N_zPenalty(**kwargs)
+        # N_z only accepts explained_variance
+        filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance']}
+        return N_zPenalty(**filtered)
     elif penalty_type == "Q_h":
-        return Q_hPenalty(**kwargs)
+        # Q_h accepts epsilon, stopgrad_denominator
+        filtered = {k: v for k, v in kwargs.items() if k in ['epsilon']}
+        return Q_hPenalty(stopgrad_denominator=stopgrad_denominator, **filtered)
     elif penalty_type == "Q_z":
-        return Q_zPenalty(**kwargs)
+        # Q_z accepts explained_variance, epsilon, stopgrad_denominator
+        filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance', 'epsilon']}
+        return Q_zPenalty(stopgrad_denominator=stopgrad_denominator, **filtered)
     elif penalty_type == "periodic_pca":
-        return PeriodicPCAOrbitVariancePenalty(**kwargs)
+        # periodic_pca accepts explained_variance, refit_interval
+        filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance', 'refit_interval']}
+        return PeriodicPCAOrbitVariancePenalty(**filtered)
     elif penalty_type == "ema_pca":
-        return EMAPCAOrbitVariancePenalty(**kwargs)
+        # ema_pca accepts explained_variance, ema_decay
+        filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance', 'ema_decay']}
+        return EMAPCAOrbitVariancePenalty(**filtered)
     else:
         raise ValueError(
             f"Unknown penalty type: {penalty_type}. "

@@ -6,8 +6,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+from .train import plot_training_loss
 
-def plot_regression_surface(model, dataset, save_path, device):
+
+def plot_regression_surface(
+    model, 
+    dataset, 
+    save_path, 
+    device,
+    field_name: str = None,
+    sym_penalty_type: str = None,
+    sym_layers: list = None,
+    lambda_sym: float = 0.0,
+):
     """
     Plot predicted vs true regression surface.
     
@@ -21,6 +32,10 @@ def plot_regression_surface(model, dataset, save_path, device):
         dataset: Dataset with r_min, r_max, and scalar_field_fn attributes.
         save_path: Path to save the figure.
         device: Torch device.
+        field_name: Name of the scalar field used for training.
+        sym_penalty_type: Type of symmetry penalty used during training.
+        sym_layers: List of layers penalized during training.
+        lambda_sym: Lambda value for symmetry penalty.
     """
     model.eval()
     model.to(device)
@@ -46,6 +61,19 @@ def plot_regression_surface(model, dataset, save_path, device):
     
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     
+    # Build suptitle with field name and training info
+    suptitle_lines = []
+    if field_name:
+        suptitle_lines.append(f'Field = {field_name}')
+    if sym_penalty_type and lambda_sym > 0 and sym_layers:
+        layers_str = str(sym_layers).replace(' ', '')
+        suptitle_lines.append(f'Model trained with {sym_penalty_type} penalty (layers={layers_str}, λ={lambda_sym})')
+    elif field_name:
+        suptitle_lines.append('Model trained without symmetry penalty')
+    
+    if suptitle_lines:
+        fig.suptitle('\n'.join(suptitle_lines), fontsize=11, fontweight='bold')
+    
     vmin, vmax = true_field.min(), true_field.max()
     for ax, data, title in zip(axes, [preds, true_field, error], 
                                 ['Predicted', 'True', 'Error']):
@@ -65,6 +93,7 @@ def plot_regression_surface(model, dataset, save_path, device):
         ax.set_aspect('equal')
     
     plt.tight_layout()
+    fig.subplots_adjust(top=0.85)
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
 
@@ -81,6 +110,10 @@ def plot_run_summary(
     MI_values: dict = None,
     oracle_MI: float = None,
     xlim: tuple = None,
+    lambda_sym: float = 0.0,
+    field_name: str = None,
+    sym_penalty_type: str = None,
+    sym_layers: list = None,
 ):
     """
     Create a combined summary plot with loss curves, Q/MI metrics, and regression surface.
@@ -107,13 +140,32 @@ def plot_run_summary(
         oracle_MI: Optional oracle MI value.
         xlim: Optional tuple (xmin, xmax) for fixed x-axis limits on loss plot.
               Useful for creating animation frames with consistent axes.
+        lambda_sym: Lambda weight for symmetry penalty (for plotting scaled sym loss).
+        field_name: Name of the scalar field used for training.
+        sym_penalty_type: Type of symmetry penalty used during training.
+        sym_layers: List of layers penalized during training.
     """
     # Create figure with mosaic layout: 2 rows x 4 columns with width ratios
-    fig = plt.figure(figsize=(16, 8))
+    fig = plt.figure(figsize=(16, 9))
     
-    # Title
-    title = run_name if run_name else 'Run Summary'
-    fig.suptitle(title, fontsize=14, fontweight='bold')
+    # Build suptitle with field name and training info
+    suptitle_lines = []
+    if field_name:
+        suptitle_lines.append(f'Field = {field_name}')
+    if sym_penalty_type and lambda_sym > 0 and sym_layers:
+        layers_str = str(sym_layers).replace(' ', '')
+        suptitle_lines.append(f'Model trained with {sym_penalty_type} penalty (layers={layers_str}, λ={lambda_sym})')
+    elif field_name:
+        suptitle_lines.append('Model trained without symmetry penalty')
+    
+    # Add run_name if provided and we have a suptitle
+    if run_name and suptitle_lines:
+        suptitle_lines.append(run_name)
+    elif run_name:
+        suptitle_lines = [run_name]
+    
+    suptitle = '\n'.join(suptitle_lines) if suptitle_lines else 'Run Summary'
+    fig.suptitle(suptitle, fontsize=11, fontweight='bold', y=0.98)
     
     # Create grid layout with width_ratios: A/B get 2 units, C area gets 3 units (1.5+1.5)
     from matplotlib.gridspec import GridSpec
@@ -122,34 +174,11 @@ def plot_run_summary(
     # === A: Loss curves (top left, spans cols 0-1) ===
     ax_loss = fig.add_subplot(gs[0, :2])
     
-    # Check for data using new or old history format
-    eval_steps = history.get('eval_step', history.get('step', []))
-    
-    if eval_steps:  # Only plot if training happened
-        eval_steps = np.array(eval_steps)
-        train_loss_eval = np.array(history['train_loss'])
-        val_loss = np.array(history['val_loss'])
-        
-        # Get per-batch loss if available
-        batch_steps = np.array(history.get('batch_step', []))
-        batch_loss = np.array(history.get('batch_loss', []))
-        
-        if len(batch_steps) > 0:
-            ax_loss.plot(batch_steps, batch_loss, color='tab:blue', alpha=0.3, linewidth=0.5, label='Train (batch)')
-        ax_loss.plot(eval_steps, train_loss_eval, color='tab:blue', linewidth=2, label='Train (eval)')
-        ax_loss.plot(eval_steps, val_loss, color='tab:orange', linewidth=2, label='Val (eval)')
-        ax_loss.set_yscale('log')
-        ax_loss.set_xlabel('Step')
-        ax_loss.set_ylabel('Loss')
-        ax_loss.legend(fontsize='small')
-        ax_loss.grid(True, alpha=0.3)
-    else:
-        ax_loss.text(0.5, 0.5, 'No training (steps=0)', ha='center', va='center', transform=ax_loss.transAxes)
-        ax_loss.set_xlabel('Step')
-        ax_loss.set_ylabel('Loss')
-    ax_loss.set_title('Training and Validation Loss')
-    if xlim is not None:
-        ax_loss.set_xlim(xlim)
+    # Use shared plotting function
+    plot_training_loss(
+        ax_loss, history, lambda_sym=lambda_sym, xlim=xlim,
+        title='Training and Validation Loss'
+    )
     
     # === B: Q and MI metrics (bottom left, spans cols 0-1) ===
     ax_metrics = fig.add_subplot(gs[1, :2])
@@ -297,6 +326,6 @@ def plot_run_summary(
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*tight_layout.*")
         plt.tight_layout()
-    fig.subplots_adjust(top=0.93)
+    fig.subplots_adjust(top=0.85)
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
