@@ -13,10 +13,19 @@ Penalty types:
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Callable
 
-from .groups.so2 import rotate, sample_rotations
+from .orbit import (
+    compute_pca_projection,
+    pca_from_covariance,
+    compute_pairwise_variance,
+    compute_orbit_variance,
+)
 
+
+# =============================================================================
+# Base Class
+# =============================================================================
 
 class SymmetryPenalty(ABC):
     """Abstract base class for symmetry penalties."""
@@ -29,6 +38,7 @@ class SymmetryPenalty(ABC):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         """
         Compute the symmetry penalty for a single layer.
@@ -39,6 +49,7 @@ class SymmetryPenalty(ABC):
             layer_idx: Layer index (1-based for hidden, -1 for output).
             n_augmentations: Number of rotation pairs to sample.
             device: Torch device.
+            generator: Optional torch.Generator for reproducible rotation sampling.
         
         Returns:
             Scalar tensor with the penalty value (with gradients).
@@ -52,6 +63,7 @@ class SymmetryPenalty(ABC):
         layer_indices: List[int],
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         """
         Compute the total symmetry penalty summed over multiple layers.
@@ -62,6 +74,7 @@ class SymmetryPenalty(ABC):
             layer_indices: List of layer indices to penalize.
             n_augmentations: Number of rotation pairs to sample.
             device: Torch device.
+            generator: Optional torch.Generator for reproducible rotation sampling.
         
         Returns:
             Scalar tensor with the total penalty value (with gradients).
@@ -71,9 +84,13 @@ class SymmetryPenalty(ABC):
         
         total = torch.tensor(0.0, device=device)
         for layer_idx in layer_indices:
-            total = total + self.compute(model, data, layer_idx, n_augmentations, device)
+            total = total + self.compute(model, data, layer_idx, n_augmentations, device, generator)
         return total
 
+
+# =============================================================================
+# Penalty Implementations
+# =============================================================================
 
 class N_hPenalty(SymmetryPenalty):
     """
@@ -89,26 +106,13 @@ class N_hPenalty(SymmetryPenalty):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         data = data.to(device)
-        N = data.shape[0]
-        
-        total_variance = torch.tensor(0.0, device=device)
-        
-        for _ in range(n_augmentations):
-            theta1 = sample_rotations(N, device=device)
-            theta2 = sample_rotations(N, device=device)
-            
-            x_rot1 = rotate(data, theta1)
-            x_rot2 = rotate(data, theta2)
-            
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-            
-            diff_sq = ((h1 - h2) ** 2).sum(dim=-1).mean()
-            total_variance = total_variance + diff_sq
-        
-        return total_variance / n_augmentations
+        return compute_orbit_variance(
+            model, data, layer_idx, n_augmentations, device,
+            generator=generator, requires_grad=True
+        )
 
 
 class N_zPenalty(SymmetryPenalty):
@@ -129,50 +133,23 @@ class N_zPenalty(SymmetryPenalty):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         data = data.to(device)
-        N = data.shape[0]
         
-        # Compute batch statistics (no grad)
+        # Compute batch PCA (no grad for eigendecomposition)
         with torch.no_grad():
             h_batch = model.forward_with_intermediate(data, layer_idx)
-            mu = h_batch.mean(dim=0)
-            h_centered = h_batch - mu
-            cov = (h_centered.T @ h_centered) / (h_batch.shape[0] - 1)
-            
-            if h_batch.shape[1] == 1:
-                U = torch.eye(1, device=device)
-            else:
-                eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-                idx = torch.argsort(eigenvalues, descending=True)
-                eigenvalues = eigenvalues[idx]
-                eigenvectors = eigenvectors[:, idx]
-                
-                total_var = eigenvalues.sum()
-                cumsum = torch.cumsum(eigenvalues, dim=0)
-                k = (cumsum < self.explained_variance * total_var).sum().item() + 1
-                k = max(1, min(k, len(eigenvalues)))
-                U = eigenvectors[:, :k]
+            mu, U = compute_pca_projection(h_batch, self.explained_variance, device)
         
-        total_variance = torch.tensor(0.0, device=device)
+        # Define PCA transform
+        def pca_transform(h):
+            return (h - mu) @ U
         
-        for _ in range(n_augmentations):
-            theta1 = sample_rotations(N, device=device)
-            theta2 = sample_rotations(N, device=device)
-            
-            x_rot1 = rotate(data, theta1)
-            x_rot2 = rotate(data, theta2)
-            
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-            
-            z1 = (h1 - mu) @ U
-            z2 = (h2 - mu) @ U
-            
-            diff_sq = ((z1 - z2) ** 2).sum(dim=-1).mean()
-            total_variance = total_variance + diff_sq
-        
-        return total_variance / n_augmentations
+        return compute_orbit_variance(
+            model, data, layer_idx, n_augmentations, device,
+            generator=generator, transform_fn=pca_transform, requires_grad=True
+        )
 
 
 class Q_hPenalty(SymmetryPenalty):
@@ -200,41 +177,26 @@ class Q_hPenalty(SymmetryPenalty):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         data = data.to(device)
-        N = data.shape[0]
         
         # Compute denominator: E[||h(x) - h(x')||²] from batch
-        def compute_denominator():
+        def get_denominator():
             h_batch = model.forward_with_intermediate(data, layer_idx)
-            h_diff = h_batch.unsqueeze(0) - h_batch.unsqueeze(1)  # (N, N, D)
-            h_diff_sq = (h_diff ** 2).sum(dim=-1)  # (N, N)
-            mask = ~torch.eye(N, dtype=torch.bool, device=device)
-            return h_diff_sq[mask].mean()
+            return compute_pairwise_variance(h_batch)
         
         if self.stopgrad_denominator:
             with torch.no_grad():
-                denominator = compute_denominator()
+                denominator = get_denominator()
         else:
-            denominator = compute_denominator()
+            denominator = get_denominator()
         
-        # Compute numerator: E[||h(g1*x) - h(g2*x)||²]
-        numerator = torch.tensor(0.0, device=device)
-        
-        for _ in range(n_augmentations):
-            theta1 = sample_rotations(N, device=device)
-            theta2 = sample_rotations(N, device=device)
-            
-            x_rot1 = rotate(data, theta1)
-            x_rot2 = rotate(data, theta2)
-            
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-            
-            diff_sq = ((h1 - h2) ** 2).sum(dim=-1).mean()
-            numerator = numerator + diff_sq
-        
-        numerator = numerator / n_augmentations
+        # Compute numerator
+        numerator = compute_orbit_variance(
+            model, data, layer_idx, n_augmentations, device,
+            generator=generator, requires_grad=True
+        )
         
         return numerator / (denominator + self.epsilon)
 
@@ -266,66 +228,36 @@ class Q_zPenalty(SymmetryPenalty):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         data = data.to(device)
-        N = data.shape[0]
         
         # Compute PCA statistics (always no grad - eigendecomposition is expensive/unstable)
         with torch.no_grad():
             h_batch = model.forward_with_intermediate(data, layer_idx)
-            mu = h_batch.mean(dim=0)
-            h_centered = h_batch - mu
-            cov = (h_centered.T @ h_centered) / (h_batch.shape[0] - 1)
-            
-            if h_batch.shape[1] == 1:
-                U = torch.eye(1, device=device)
-            else:
-                eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-                idx = torch.argsort(eigenvalues, descending=True)
-                eigenvalues = eigenvalues[idx]
-                eigenvectors = eigenvectors[:, idx]
-                
-                total_var = eigenvalues.sum()
-                cumsum = torch.cumsum(eigenvalues, dim=0)
-                k = (cumsum < self.explained_variance * total_var).sum().item() + 1
-                k = max(1, min(k, len(eigenvalues)))
-                U = eigenvectors[:, :k]
+            mu, U = compute_pca_projection(h_batch, self.explained_variance, device)
+        
+        # Define PCA transform
+        def pca_transform(h):
+            return (h - mu) @ U
         
         # Compute denominator: E[||z(x) - z(x')||²]
-        def compute_denominator():
+        def get_denominator():
             h_batch_denom = model.forward_with_intermediate(data, layer_idx)
-            z_batch = (h_batch_denom - mu) @ U
-            z_diff = z_batch.unsqueeze(0) - z_batch.unsqueeze(1)  # (N, N, k)
-            z_diff_sq = (z_diff ** 2).sum(dim=-1)  # (N, N)
-            mask = ~torch.eye(N, dtype=torch.bool, device=device)
-            return z_diff_sq[mask].mean()
+            z_batch = pca_transform(h_batch_denom)
+            return compute_pairwise_variance(z_batch)
         
         if self.stopgrad_denominator:
             with torch.no_grad():
-                denominator = compute_denominator()
+                denominator = get_denominator()
         else:
-            denominator = compute_denominator()
+            denominator = get_denominator()
         
-        # Compute numerator: E[||z(g1*x) - z(g2*x)||²]
-        numerator = torch.tensor(0.0, device=device)
-        
-        for _ in range(n_augmentations):
-            theta1 = sample_rotations(N, device=device)
-            theta2 = sample_rotations(N, device=device)
-            
-            x_rot1 = rotate(data, theta1)
-            x_rot2 = rotate(data, theta2)
-            
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-            
-            z1 = (h1 - mu) @ U
-            z2 = (h2 - mu) @ U
-            
-            diff_sq = ((z1 - z2) ** 2).sum(dim=-1).mean()
-            numerator = numerator + diff_sq
-        
-        numerator = numerator / n_augmentations
+        # Compute numerator
+        numerator = compute_orbit_variance(
+            model, data, layer_idx, n_augmentations, device,
+            generator=generator, transform_fn=pca_transform, requires_grad=True
+        )
         
         return numerator / (denominator + self.epsilon)
 
@@ -375,26 +307,7 @@ class PeriodicPCAOrbitVariancePenalty(SymmetryPenalty):
         
         with torch.no_grad():
             h = model.forward_with_intermediate(data, layer_idx)
-        
-        # Compute mean and covariance
-        mu = h.mean(dim=0)
-        h_centered = h - mu
-        cov = (h_centered.T @ h_centered) / (h.shape[0] - 1)
-        
-        # Get PCA projection
-        if h.shape[1] == 1:
-            U = torch.eye(1, device=device)
-        else:
-            eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-            idx = torch.argsort(eigenvalues, descending=True)
-            eigenvalues = eigenvalues[idx]
-            eigenvectors = eigenvectors[:, idx]
-            
-            total_var = eigenvalues.sum()
-            cumsum = torch.cumsum(eigenvalues, dim=0)
-            k = (cumsum < self.explained_variance * total_var).sum().item() + 1
-            k = max(1, min(k, len(eigenvalues)))
-            U = eigenvectors[:, :k]
+            mu, U = compute_pca_projection(h, self.explained_variance, device)
         
         self._projections[layer_idx] = (mu.detach(), U.detach())
     
@@ -405,6 +318,7 @@ class PeriodicPCAOrbitVariancePenalty(SymmetryPenalty):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         """
         Compute PCA-projected orbit variance penalty, re-fitting periodically.
@@ -427,27 +341,15 @@ class PeriodicPCAOrbitVariancePenalty(SymmetryPenalty):
         
         mu, U = self._projections[layer_idx]
         data = data.to(device)
-        N = data.shape[0]
         
-        total_variance = torch.tensor(0.0, device=device)
+        # Define PCA transform using stored projection
+        def pca_transform(h):
+            return (h - mu) @ U
         
-        for _ in range(n_augmentations):
-            theta1 = sample_rotations(N, device=device)
-            theta2 = sample_rotations(N, device=device)
-            
-            x_rot1 = rotate(data, theta1)
-            x_rot2 = rotate(data, theta2)
-            
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-            
-            z1 = (h1 - mu) @ U
-            z2 = (h2 - mu) @ U
-            
-            diff_sq = ((z1 - z2) ** 2).sum(dim=-1).mean()
-            total_variance = total_variance + diff_sq
-        
-        return total_variance / n_augmentations
+        return compute_orbit_variance(
+            model, data, layer_idx, n_augmentations, device,
+            generator=generator, transform_fn=pca_transform, requires_grad=True
+        )
 
 
 class EMAPCAOrbitVariancePenalty(SymmetryPenalty):
@@ -499,19 +401,7 @@ class EMAPCAOrbitVariancePenalty(SymmetryPenalty):
             ema_cov = self.ema_decay * old_cov + (1 - self.ema_decay) * batch_cov.detach()
         
         # Compute PCA projection from EMA covariance
-        if h.shape[1] == 1:
-            U = torch.eye(1, device=device)
-        else:
-            eigenvalues, eigenvectors = torch.linalg.eigh(ema_cov)
-            idx = torch.argsort(eigenvalues, descending=True)
-            eigenvalues = eigenvalues[idx]
-            eigenvectors = eigenvectors[:, idx]
-            
-            total_var = eigenvalues.sum()
-            cumsum = torch.cumsum(eigenvalues, dim=0)
-            k = (cumsum < self.explained_variance * total_var).sum().item() + 1
-            k = max(1, min(k, len(eigenvalues)))
-            U = eigenvectors[:, :k]
+        U = pca_from_covariance(ema_cov, self.explained_variance, device)
         
         self._stats[layer_idx] = (ema_mu, ema_cov, U.detach())
     
@@ -522,6 +412,7 @@ class EMAPCAOrbitVariancePenalty(SymmetryPenalty):
         layer_idx: int,
         n_augmentations: int,
         device: torch.device,
+        generator: torch.Generator = None,
     ) -> torch.Tensor:
         """
         Compute PCA-projected orbit variance penalty with EMA statistics.
@@ -533,29 +424,20 @@ class EMAPCAOrbitVariancePenalty(SymmetryPenalty):
         
         ema_mu, _, U = self._stats[layer_idx]
         data = data.to(device)
-        N = data.shape[0]
         
-        total_variance = torch.tensor(0.0, device=device)
+        # Define PCA transform using EMA statistics
+        def pca_transform(h):
+            return (h - ema_mu) @ U
         
-        for _ in range(n_augmentations):
-            theta1 = sample_rotations(N, device=device)
-            theta2 = sample_rotations(N, device=device)
-            
-            x_rot1 = rotate(data, theta1)
-            x_rot2 = rotate(data, theta2)
-            
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-            
-            # Use EMA mean for centering
-            z1 = (h1 - ema_mu) @ U
-            z2 = (h2 - ema_mu) @ U
-            
-            diff_sq = ((z1 - z2) ** 2).sum(dim=-1).mean()
-            total_variance = total_variance + diff_sq
-        
-        return total_variance / n_augmentations
+        return compute_orbit_variance(
+            model, data, layer_idx, n_augmentations, device,
+            generator=generator, transform_fn=pca_transform, requires_grad=True
+        )
 
+
+# =============================================================================
+# Factory Function
+# =============================================================================
 
 def create_symmetry_penalty(penalty_type: str, **kwargs) -> SymmetryPenalty:
     """

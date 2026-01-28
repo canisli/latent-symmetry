@@ -348,6 +348,7 @@ def create_dataloaders(
     batch_size: int = 64,
     seed: int = 42,
     num_workers: int = 0,
+    shuffle_generator: Optional[torch.Generator] = None,
 ) -> Tuple[DataLoader, DataLoader, ScalarFieldDataset]:
     """
     Create train and validation dataloaders for scalar field regression.
@@ -361,6 +362,7 @@ def create_dataloaders(
         batch_size: Batch size for dataloaders.
         seed: Random seed for reproducibility.
         num_workers: Number of workers for dataloaders.
+        shuffle_generator: Optional torch.Generator for reproducible DataLoader shuffling.
     
     Returns:
         Tuple of (train_loader, val_loader, full_dataset).
@@ -392,6 +394,7 @@ def create_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         drop_last=False,
+        generator=shuffle_generator,
     )
     
     val_loader = DataLoader(

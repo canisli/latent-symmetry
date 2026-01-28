@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
-from latsym.models import MLP
+from latsym.models import MLP, build_model
+from latsym.seeds import derive_seed, set_model_seed, set_global_seed
 from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface, plot_run_summary
@@ -27,12 +28,6 @@ import shlex
 import logging
 
 log = logging.getLogger(__name__)
-
-
-def build_model(cfg: DictConfig) -> nn.Module:
-    dims = [cfg.input_dim] + [cfg.hidden_dim] * cfg.num_layers + [cfg.output_dim]
-    act_map = {"relu": nn.ReLU, "tanh": nn.Tanh, "gelu": nn.GELU}
-    return MLP(dims=dims, act=act_map.get(cfg.activation, nn.ReLU))
 
 
 def compute_and_plot_metrics(
@@ -145,6 +140,10 @@ def compute_and_plot_metrics(
 
 @hydra.main(version_base=None, config_path="../config", config_name="config")
 def main(cfg: DictConfig):
+    # Set global seed FIRST for full reproducibility
+    run_seed = cfg.experiment.seed
+    set_global_seed(run_seed)
+    
     # Determine output directory
     outdir = cfg.train.get('outdir', None)
     if outdir is not None:
@@ -192,10 +191,20 @@ def main(cfg: DictConfig):
     command = shlex.join([sys.executable] + sys.argv)
     (output_dir / 'command.txt').write_text(command + '\n')
     
-    seed = cfg.experiment.seed
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    # Derive separate seeds for different randomness sources
+    # (run_seed already set at the start of main)
+    data_seed = derive_seed(run_seed, "data")
+    model_seed = derive_seed(run_seed, "model")
+    augmentation_seed = derive_seed(run_seed, "augmentation")
+    
+    log.info(f"Run seed: {run_seed} -> data: {data_seed}, model: {model_seed}, augmentation: {augmentation_seed}")
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Create generators for reproducible randomness
+    # Note: These are created AFTER set_global_seed for consistent state
+    shuffle_generator = torch.Generator().manual_seed(data_seed)
+    augmentation_generator = torch.Generator(device=device).manual_seed(augmentation_seed)
     
     train_loader, val_loader, full_dataset = create_dataloaders(
         n_samples=cfg.data.n_samples,
@@ -203,9 +212,12 @@ def main(cfg: DictConfig):
         r_max=cfg.data.r_max,
         train_split=cfg.data.train_split,
         batch_size=cfg.train.batch_size,
-        seed=seed,
+        seed=data_seed,
+        shuffle_generator=shuffle_generator,
     )
     
+    # Set model seed right before building for reproducible weight initialization
+    set_model_seed(model_seed)
     model = build_model(cfg.model)
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)
@@ -294,6 +306,7 @@ def main(cfg: DictConfig):
         frame_callback=frame_callback,
         frame_interval=dynamics_interval,
         grad_align_interval=grad_align_interval,
+        augmentation_generator=augmentation_generator,
     )
     
     log.info(f"\nFinal Train MSE: {history['train_loss'][-1]:.6f}")

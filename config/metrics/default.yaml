@@ -10,7 +10,7 @@ enabled:
 # Metric-specific parameters
 Q:
   n_rotations: 32
-  explained_variance: 0.95
+  explained_variance: 0.95 #TODO revisit these two numbers
 
 Q_h:
   n_rotations: 32

@@ -15,6 +15,7 @@ from pathlib import Path
 from .base import BaseMetric
 from .registry import register
 from .plotting import plot_metric_vs_layer, TrainingInfo
+from ..orbit import compute_relative_orbit_variance
 from ..groups.so2 import rotate, sample_rotations
 
 
@@ -55,34 +56,14 @@ def compute_relative_symmetry_loss(
     model.eval()
     model.to(device)
     data = data.to(device)
-    N = data.shape[0]
     
-    # Compute RSL: E[||h(g1*x) - h(g2*x)||² / (||h(g1*x)||² + ||h(g2*x)||² + ε)]
-    total_rsl = 0.0
-    for _ in range(n_rotations):
-        theta1 = sample_rotations(N, device=device)
-        theta2 = sample_rotations(N, device=device)
-        
-        x_rot1 = rotate(data, theta1)
-        x_rot2 = rotate(data, theta2)
-        
-        with torch.no_grad():
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-        
-        # ||h(g1*x) - h(g2*x)||² per sample
-        diff_sq = ((h1 - h2) ** 2).sum(dim=-1)  # (N,)
-        
-        # ||h(g1*x)||² + ||h(g2*x)||² per sample
-        norm_sq_sum = (h1 ** 2).sum(dim=-1) + (h2 ** 2).sum(dim=-1)  # (N,)
-        
-        # Relative loss per sample
-        rsl_per_sample = diff_sq / (norm_sq_sum + epsilon)  # (N,)
-        
-        total_rsl += rsl_per_sample.mean()
+    # Use shared function for RSL computation
+    rsl = compute_relative_orbit_variance(
+        model, data, layer_idx, n_rotations, device,
+        epsilon=epsilon, requires_grad=False
+    )
     
-    rsl = (total_rsl / n_rotations).item()
-    return rsl
+    return rsl.item()
 
 
 def compute_all_relative_symmetry_loss(

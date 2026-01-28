@@ -101,6 +101,7 @@ def generate_mi_dataset(
     K: int,
     n_pairs_per_point: int = 4,
     device: torch.device = None,
+    generator: torch.Generator = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     """
     Generate dataset for training the MI classifier.
@@ -116,6 +117,7 @@ def generate_mi_dataset(
         K: Number of discrete angles.
         n_pairs_per_point: Number of angle pairs per data point.
         device: Torch device.
+        generator: Optional torch.Generator for reproducible sampling.
     
     Returns:
         Tuple of (r1, r2, labels, repr_dim) where:
@@ -136,8 +138,8 @@ def generate_mi_dataset(
     angles = get_discrete_angles(K, device=device)
     
     # Sample angle indices
-    idx1 = torch.randint(0, K, (N, n_pairs_per_point), device=device)
-    idx2 = torch.randint(0, K, (N, n_pairs_per_point), device=device)
+    idx1 = torch.randint(0, K, (N, n_pairs_per_point), device=device, generator=generator)
+    idx2 = torch.randint(0, K, (N, n_pairs_per_point), device=device, generator=generator)
     
     # Compute relative rotation class: (idx2 - idx1) mod K
     delta_idx = (idx2 - idx1) % K
@@ -312,6 +314,7 @@ def compute_MI(
     test_fraction: float = 0.2,
     device: torch.device = None,
     permutation_null: bool = False,
+    generator: torch.Generator = None,
 ) -> float:
     """
     Compute MI metric for a single layer.
@@ -333,6 +336,7 @@ def compute_MI(
         test_fraction: Fraction of data to use for testing.
         device: Torch device.
         permutation_null: If True, shuffle labels to get null baseline.
+        generator: Optional torch.Generator for reproducible sampling.
     
     Returns:
         MI value for the layer (0 = invariant, 1 = equivariant).
@@ -342,7 +346,7 @@ def compute_MI(
     
     # Generate dataset
     r1, r2, labels, repr_dim = generate_mi_dataset(
-        model, data, layer_idx, K, n_pairs_per_point, device
+        model, data, layer_idx, K, n_pairs_per_point, device, generator
     )
     
     # Normalize representations to make estimator scale/offset invariant
@@ -400,6 +404,7 @@ def compute_all_MI(
     test_fraction: float = 0.2,
     device: torch.device = None,
     permutation_null: bool = False,
+    generator: torch.Generator = None,
 ) -> Dict[str, float]:
     """
     Compute MI for all layers in the model.
@@ -416,6 +421,7 @@ def compute_all_MI(
         test_fraction: Fraction of data for testing.
         device: Torch device.
         permutation_null: If True, shuffle labels for null baseline.
+        generator: Optional torch.Generator for reproducible sampling.
     
     Returns:
         Dictionary mapping layer names to MI values.
@@ -427,7 +433,7 @@ def compute_all_MI(
         MI = compute_MI(
             model, data, layer_idx, K, n_pairs_per_point,
             classifier_hidden, classifier_steps, lr, batch_size,
-            test_fraction, device, permutation_null
+            test_fraction, device, permutation_null, generator
         )
         MI_values[f'layer_{layer_idx}'] = MI
     
@@ -435,7 +441,7 @@ def compute_all_MI(
     MI_out = compute_MI(
         model, data, -1, K, n_pairs_per_point,
         classifier_hidden, classifier_steps, lr, batch_size,
-        test_fraction, device, permutation_null
+        test_fraction, device, permutation_null, generator
     )
     MI_values['output'] = MI_out
     
@@ -454,6 +460,7 @@ def compute_oracle_MI(
     batch_size: int = 256,
     test_fraction: float = 0.2,
     device: torch.device = None,
+    generator: torch.Generator = None,
 ) -> float:
     """
     Compute MI for the oracle (perfect predictor where ŷ = y).
@@ -474,6 +481,7 @@ def compute_oracle_MI(
         batch_size: Batch size.
         test_fraction: Fraction of data for testing.
         device: Torch device.
+        generator: Optional torch.Generator for reproducible sampling.
     
     Returns:
         Oracle MI value.
@@ -490,8 +498,8 @@ def compute_oracle_MI(
     angles = get_discrete_angles(K, device=device)
     
     # Sample angle indices
-    idx1 = torch.randint(0, K, (N, n_pairs_per_point), device=device)
-    idx2 = torch.randint(0, K, (N, n_pairs_per_point), device=device)
+    idx1 = torch.randint(0, K, (N, n_pairs_per_point), device=device, generator=generator)
+    idx2 = torch.randint(0, K, (N, n_pairs_per_point), device=device, generator=generator)
     
     # Compute relative rotation class: (idx2 - idx1) mod K
     delta_idx = (idx2 - idx1) % K
@@ -656,6 +664,7 @@ class MIMetric(BaseMetric):
         model: nn.Module,
         data: torch.Tensor,
         device: torch.device = None,
+        generator: torch.Generator = None,
         **kwargs
     ) -> Dict[str, float]:
         """Compute MI for all layers."""
@@ -671,6 +680,7 @@ class MIMetric(BaseMetric):
             test_fraction=kwargs.get('test_fraction', self.test_fraction),
             device=device,
             permutation_null=kwargs.get('permutation_null', False),
+            generator=generator,
         )
     
     def plot(

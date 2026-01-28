@@ -6,7 +6,8 @@ Trains models on invariant and non-invariant tasks, then computes
 and plots selected symmetry metrics for each layer.
 """
 
-from latsym.models import MLP
+from latsym.models import MLP, build_model
+from latsym.seeds import derive_seed, set_model_seed, set_global_seed
 from latsym.tasks import create_dataloaders
 from latsym.train import train_loop, create_scheduler, plot_loss_curves
 from latsym.eval import plot_regression_surface, plot_run_summary
@@ -27,12 +28,6 @@ import json
 import os
 import sys
 from datetime import datetime
-
-
-def build_model(cfg: DictConfig) -> nn.Module:
-    dims = [cfg.input_dim] + [cfg.hidden_dim] * cfg.num_layers + [cfg.output_dim]
-    act_map = {"relu": nn.ReLU, "tanh": nn.Tanh, "gelu": nn.GELU}
-    return MLP(dims=dims, act=act_map.get(cfg.activation, nn.ReLU))
 
 
 def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
@@ -58,9 +53,16 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         print(f"Running: {name}")
         print(f"{'='*60}")
     
-    seed = cfg.experiment.seed
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    # Set global seed for this run
+    run_seed = cfg.experiment.seed
+    set_global_seed(run_seed)
+    
+    # Derive separate seeds for different randomness sources
+    data_seed = derive_seed(run_seed, "data")
+    model_seed = derive_seed(run_seed, "model")
+    
+    # Create generator for reproducible DataLoader shuffling
+    shuffle_generator = torch.Generator().manual_seed(data_seed)
     
     train_loader, val_loader, full_dataset = create_dataloaders(
         n_samples=cfg.data.n_samples,
@@ -69,9 +71,12 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         scalar_field_fn=scalar_field_fn,
         train_split=cfg.data.train_split,
         batch_size=cfg.train.batch_size,
-        seed=seed,
+        seed=data_seed,
+        shuffle_generator=shuffle_generator,
     )
     
+    # Set model seed before building for reproducible weight initialization
+    set_model_seed(model_seed)
     model = build_model(cfg.model)
     loss_fn = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay)

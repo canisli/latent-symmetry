@@ -16,6 +16,13 @@ from pathlib import Path
 from .base import BaseMetric
 from .registry import register
 from .plotting import plot_metric_vs_layer, TrainingInfo
+from ..orbit import (
+    compute_pca_projection,
+    pca_from_covariance,
+    project_activations,
+    compute_pairwise_variance,
+    compute_orbit_variance,
+)
 from ..groups.so2 import rotate, sample_rotations
 
 
@@ -65,39 +72,7 @@ def get_pca_projection(
     Returns:
         U: Projection matrix of shape (D, k) where k is chosen to explain variance.
     """
-    eigenvalues, eigenvectors = torch.linalg.eigh(cov)
-    
-    # Sort in descending order
-    idx = torch.argsort(eigenvalues, descending=True)
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
-    
-    # Find k to explain specified variance
-    total_var = eigenvalues.sum()
-    cumsum = torch.cumsum(eigenvalues, dim=0)
-    k = (cumsum < explained_variance * total_var).sum().item() + 1
-    k = max(1, min(k, len(eigenvalues)))
-    
-    return eigenvectors[:, :k]
-
-
-def project_activations(
-    h: torch.Tensor,
-    U: torch.Tensor,
-    mu: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Project activations onto PCA subspace: z = U^T (h - mu).
-    
-    Args:
-        h: Activations of shape (N, D).
-        U: Projection matrix of shape (D, k).
-        mu: Mean of shape (D,).
-    
-    Returns:
-        Projected activations of shape (N, k).
-    """
-    return (h - mu) @ U
+    return pca_from_covariance(cov, explained_variance, cov.device)
 
 
 def compute_Q_h(
@@ -130,35 +105,16 @@ def compute_Q_h(
     model.eval()
     model.to(device)
     data = data.to(device)
-    N = data.shape[0]
-    
-    # Get raw activations for original data
-    with torch.no_grad():
-        h = model.forward_with_intermediate(data, layer_idx)
     
     # Compute denominator: E[||h(x) - h(x')||^2]
-    # Use all pairs: mean of ||h_i - h_j||^2 for i != j
-    h_diff = h.unsqueeze(0) - h.unsqueeze(1)  # (N, N, D)
-    h_diff_sq = (h_diff ** 2).sum(dim=-1)  # (N, N)
-    mask = ~torch.eye(N, dtype=torch.bool, device=device)
-    denominator = h_diff_sq[mask].mean()
+    with torch.no_grad():
+        h = model.forward_with_intermediate(data, layer_idx)
+        denominator = compute_pairwise_variance(h)
     
-    # Compute numerator: E[||h(g1*x) - h(g2*x)||^2]
-    numerator = 0.0
-    for _ in range(n_rotations):
-        theta1 = sample_rotations(N, device=device)
-        theta2 = sample_rotations(N, device=device)
-        
-        x_rot1 = rotate(data, theta1)
-        x_rot2 = rotate(data, theta2)
-        
-        with torch.no_grad():
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-        
-        numerator += ((h1 - h2) ** 2).sum(dim=-1).mean()
-    
-    numerator /= n_rotations
+    # Compute numerator using shared function
+    numerator = compute_orbit_variance(
+        model, data, layer_idx, n_rotations, device, requires_grad=False
+    )
     
     Q_h = (numerator / denominator).item()
     return Q_h
@@ -232,7 +188,7 @@ def compute_Q(
     data = data.to(device)
     N = data.shape[0]
     
-    # Compute layer statistics
+    # Compute layer statistics and PCA projection
     mu, cov = compute_layer_statistics(model, data, layer_idx, device)
     
     # Get PCA projection (skip for scalar output)
@@ -245,54 +201,57 @@ def compute_Q(
     else:
         U = get_pca_projection(cov, explained_variance)
     
-    # Compute z for original data
-    with torch.no_grad():
-        h = model.forward_with_intermediate(data, layer_idx)
-    z = project_activations(h, U, mu)
+    # Define PCA transform
+    def pca_transform(h):
+        return project_activations(h, mu, U)
     
     # Compute denominator: E[||z(x) - z(x')||^2]
-    # Use all pairs: mean of ||z_i - z_j||^2 for i != j
-    z_diff = z.unsqueeze(0) - z.unsqueeze(1)  # (N, N, k)
-    z_diff_sq = (z_diff ** 2).sum(dim=-1)  # (N, N)
-    mask = ~torch.eye(N, dtype=torch.bool, device=device)
-    denominator = z_diff_sq[mask].mean()
+    with torch.no_grad():
+        h = model.forward_with_intermediate(data, layer_idx)
+        z = pca_transform(h)
+        denominator = compute_pairwise_variance(z)
     
-    # Compute numerator: E[||z(g1*x) - z(g2*x)||^2]
-    # Track individual samples for variance estimation
-    numerator_samples = []
-    for _ in range(n_rotations):
-        theta1 = sample_rotations(N, device=device)
-        theta2 = sample_rotations(N, device=device)
-        
-        x_rot1 = rotate(data, theta1)
-        x_rot2 = rotate(data, theta2)
-        
-        with torch.no_grad():
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-        
-        z1 = project_activations(h1, U, mu)
-        z2 = project_activations(h2, U, mu)
-        
-        sample_val = ((z1 - z2) ** 2).sum(dim=-1).mean().item()
-        numerator_samples.append(sample_val)
-    
-    numerator_samples = torch.tensor(numerator_samples)
-    numerator = numerator_samples.mean()
-    
-    denom_val = denominator.item()
-    Q = (numerator / denom_val).item()
-    
+    # Compute numerator with variance estimation if requested
     if return_std:
+        # Track individual samples for variance estimation
+        numerator_samples = []
+        with torch.no_grad():
+            for _ in range(n_rotations):
+                theta1 = sample_rotations(N, device=device)
+                theta2 = sample_rotations(N, device=device)
+                
+                x_rot1 = rotate(data, theta1)
+                x_rot2 = rotate(data, theta2)
+                
+                h1 = model.forward_with_intermediate(x_rot1, layer_idx)
+                h2 = model.forward_with_intermediate(x_rot2, layer_idx)
+                
+                z1 = pca_transform(h1)
+                z2 = pca_transform(h2)
+                
+                sample_val = ((z1 - z2) ** 2).sum(dim=-1).mean().item()
+                numerator_samples.append(sample_val)
+        
+        numerator_samples = torch.tensor(numerator_samples)
+        numerator = numerator_samples.mean()
+        
+        denom_val = denominator.item()
+        Q = (numerator / denom_val).item()
+        
         # Standard error of Q = std(numerator_samples) / denominator / sqrt(n)
-        # This is the standard error of the mean Q estimate
         if denom_val > 1e-10:
             Q_std = (numerator_samples.std() / denom_val / (n_rotations ** 0.5)).item()
         else:
             Q_std = float('nan')
         return Q, Q_std
-    
-    return Q
+    else:
+        # Use shared function for simple computation
+        numerator = compute_orbit_variance(
+            model, data, layer_idx, n_rotations, device,
+            transform_fn=pca_transform, requires_grad=False
+        )
+        Q = (numerator / denominator).item()
+        return Q
 
 
 def compute_all_Q(
@@ -378,10 +337,7 @@ def compute_oracle_Q(
     
     # Denominator: E[||y - y'||²] using all pairs
     y = targets
-    y_diff = y.unsqueeze(0) - y.unsqueeze(1)  # (N, N, 1)
-    y_diff_sq = (y_diff ** 2).sum(dim=-1)  # (N, N)
-    mask = ~torch.eye(N, dtype=torch.bool, device=device)
-    denominator = y_diff_sq[mask].mean()
+    denominator = compute_pairwise_variance(y)
     
     if denominator < 1e-10:
         # All targets are the same, Q is undefined

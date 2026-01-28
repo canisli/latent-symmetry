@@ -18,6 +18,7 @@ from pathlib import Path
 from .base import BaseMetric
 from .registry import register
 from .plotting import plot_metric_vs_layer, TrainingInfo
+from ..orbit import compute_orbit_variance
 from ..groups.so2 import rotate, sample_rotations
 
 
@@ -52,26 +53,14 @@ def compute_symmetry_loss(
     model.eval()
     model.to(device)
     data = data.to(device)
-    N = data.shape[0]
     
-    # Compute SL: (1/2) E[||h(g1*x) - h(g2*x)||²]
-    total_sl = 0.0
-    for _ in range(n_rotations):
-        theta1 = sample_rotations(N, device=device)
-        theta2 = sample_rotations(N, device=device)
-        
-        x_rot1 = rotate(data, theta1)
-        x_rot2 = rotate(data, theta2)
-        
-        with torch.no_grad():
-            h1 = model.forward_with_intermediate(x_rot1, layer_idx)
-            h2 = model.forward_with_intermediate(x_rot2, layer_idx)
-        
-        # ||h(g1*x) - h(g2*x)||² per sample
-        diff_sq = ((h1 - h2) ** 2).sum(dim=-1)  # (N,)
-        total_sl += diff_sq.mean()
+    # Compute orbit variance using shared function
+    orbit_var = compute_orbit_variance(
+        model, data, layer_idx, n_rotations, device, requires_grad=False
+    )
     
-    sl = (0.5 * total_sl / n_rotations).item()
+    # SL = (1/2) * orbit_variance
+    sl = (0.5 * orbit_var).item()
     return sl
 
 

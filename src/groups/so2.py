@@ -46,18 +46,19 @@ def rotate(x: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
     return x_rot
 
 
-def sample_rotations(n: int, device=None) -> torch.Tensor:
+def sample_rotations(n: int, device=None, generator=None) -> torch.Tensor:
     """
     Sample n random rotation angles uniformly from [0, 2*pi).
     
     Args:
         n: Number of angles to sample
         device: Torch device
+        generator: Optional torch.Generator for reproducible sampling
     
     Returns:
         Tensor of shape (n,) with random angles
     """
-    return torch.rand(n, device=device) * 2 * math.pi
+    return torch.rand(n, device=device, generator=generator) * 2 * math.pi
 
 
 def rotation_matrix(theta: torch.Tensor) -> torch.Tensor:

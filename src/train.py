@@ -26,6 +26,7 @@ def train_step(
     sym_layers: Optional[List[int]] = None,
     n_augmentations: int = 4,
     compute_grad_alignment: bool = False,
+    augmentation_generator: torch.Generator = None,
 ) -> Tuple[float, float, Optional[float], Optional[float], Optional[float]]:
     """
     Single training step with optional symmetry penalty.
@@ -42,6 +43,7 @@ def train_step(
         n_augmentations: Number of rotation pairs per sample.
         compute_grad_alignment: If True, compute cosine similarity between
             task and symmetry gradients (slower, for diagnostics).
+        augmentation_generator: Optional torch.Generator for reproducible rotation sampling.
     
     Returns:
         Tuple of (task_loss, sym_loss, grad_cosine_sim, task_grad_norm, sym_grad_norm).
@@ -64,7 +66,7 @@ def train_step(
     
     if has_sym_penalty:
         sym_loss = symmetry_penalty.compute_total(
-            model, X, sym_layers, n_augmentations, device
+            model, X, sym_layers, n_augmentations, device, augmentation_generator
         )
         sym_loss_value = sym_loss.item()
         total_loss = task_loss + lambda_sym * sym_loss
@@ -186,6 +188,7 @@ def train_loop(
     frame_callback: Optional[Callable[[int, nn.Module, Dict], None]] = None,
     frame_interval: int = 10,
     grad_align_interval: int = 0,
+    augmentation_generator: torch.Generator = None,
 ) -> Dict[str, list]:
     """
     Main training loop for regression with optional symmetry penalty.
@@ -210,6 +213,7 @@ def train_loop(
         frame_callback: Optional callback(step, model, history) for dynamics visualization.
         frame_interval: Steps between frame_callback invocations.
         grad_align_interval: Compute gradient alignment every N steps (0 = disabled).
+        augmentation_generator: Optional torch.Generator for reproducible rotation sampling.
     
     Returns:
         Dictionary of training metrics history.
@@ -264,6 +268,7 @@ def train_loop(
             sym_layers=sym_layers,
             n_augmentations=n_augmentations,
             compute_grad_alignment=compute_grad_align,
+            augmentation_generator=augmentation_generator,
         )
         
         # Record per-batch losses
@@ -311,10 +316,10 @@ def train_loop(
                 
                 with torch.no_grad():
                     train_sym = symmetry_penalty.compute_total(
-                        model, X_train, sym_layers, n_augmentations, device
+                        model, X_train, sym_layers, n_augmentations, device, augmentation_generator
                     ).item()
                     val_sym = symmetry_penalty.compute_total(
-                        model, X_val, sym_layers, n_augmentations, device
+                        model, X_val, sym_layers, n_augmentations, device, augmentation_generator
                     ).item()
                 
                 history['train_sym_loss'].append(train_sym)

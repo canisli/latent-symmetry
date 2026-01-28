@@ -1,5 +1,10 @@
+from typing import TYPE_CHECKING
+
 import torch
 import torch.nn as nn
+
+if TYPE_CHECKING:
+    from omegaconf import DictConfig
 
 
 class MLP(nn.Module):
@@ -60,3 +65,18 @@ class MLP(nn.Module):
                     return h
 
         raise RuntimeError("Failed to retrieve intermediate activation.")
+
+
+def build_model(cfg: "DictConfig") -> MLP:
+    """
+    Build MLP from Hydra config.
+    
+    Args:
+        cfg: Model config with input_dim, hidden_dim, num_layers, output_dim, activation
+    
+    Returns:
+        Configured MLP model
+    """
+    dims = [cfg.input_dim] + [cfg.hidden_dim] * cfg.num_layers + [cfg.output_dim]
+    act_map = {"relu": nn.ReLU, "tanh": nn.Tanh, "gelu": nn.GELU}
+    return MLP(dims=dims, act=act_map.get(cfg.activation, nn.ReLU))
