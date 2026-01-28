@@ -256,9 +256,9 @@ def main(cfg: DictConfig):
         
         def make_dynamics_frame(step: int, model_snapshot: nn.Module, history: dict):
             """Generate a summary frame at the current training step."""
-            # Compute Q metric only (MI is too slow - trains a classifier each time)
+            # Compute Q metric with standard errors (MI is too slow - trains a classifier each time)
             q_metric = get_metric("Q", **q_cfg)
-            Q_values = q_metric.compute(model_snapshot, X_tensor, device=device)
+            Q_values, Q_stds = q_metric.compute(model_snapshot, X_tensor, device=device, return_std=True)
             
             # Generate frame with fixed x-axis
             plot_run_summary(
@@ -272,6 +272,7 @@ def main(cfg: DictConfig):
                 field_name=field_name,
                 sym_penalty_type=sym_penalty_type,
                 sym_layers=sym_layers,
+                Q_stds=Q_stds,
             )
             plt.close('all')
         

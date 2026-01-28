@@ -114,6 +114,7 @@ def plot_run_summary(
     field_name: str = None,
     sym_penalty_type: str = None,
     sym_layers: list = None,
+    Q_stds: dict = None,
 ):
     """
     Create a combined summary plot with loss curves, Q/MI metrics, and regression surface.
@@ -144,6 +145,7 @@ def plot_run_summary(
         field_name: Name of the scalar field used for training.
         sym_penalty_type: Type of symmetry penalty used during training.
         sym_layers: List of layers penalized during training.
+        Q_stds: Optional dictionary mapping layer names to Q standard errors for error bars.
     """
     # Create figure with mosaic layout: 2 rows x 4 columns with width ratios
     fig = plt.figure(figsize=(16, 9))
@@ -187,6 +189,13 @@ def plot_run_summary(
     layers = list(Q_values.keys())
     q_vals = list(Q_values.values())
     
+    # Get Q standard errors if provided
+    has_q_stds = Q_stds is not None and len(Q_stds) > 0
+    if has_q_stds:
+        q_err = [Q_stds.get(layer, 0) for layer in layers]
+    else:
+        q_err = None
+    
     # Get MI values if provided
     has_mi = MI_values is not None and len(MI_values) > 0
     if has_mi:
@@ -196,6 +205,8 @@ def plot_run_summary(
     if oracle_Q is not None:
         layers = layers + ['oracle']
         q_vals = q_vals + [oracle_Q]
+        if has_q_stds:
+            q_err = q_err + [0]  # No error bar for oracle (deterministic)
         if has_mi:
             mi_vals = mi_vals + [oracle_MI if oracle_MI is not None else 0]
     
@@ -204,7 +215,8 @@ def plot_run_summary(
     if has_mi:
         # Grouped bar chart with Q and MI
         width = 0.35
-        bars_q = ax_metrics.bar(x - width/2, q_vals, width, label='Q', color='steelblue', edgecolor='black')
+        bars_q = ax_metrics.bar(x - width/2, q_vals, width, label='Q', color='steelblue', edgecolor='black',
+                                 yerr=q_err if has_q_stds else None, capsize=3, error_kw={'elinewidth': 1.5, 'capthick': 1.5})
         bars_mi = ax_metrics.bar(x + width/2, mi_vals, width, label='MI', color='darkorange', edgecolor='black')
         
         # Color oracle bars green
@@ -217,7 +229,8 @@ def plot_run_summary(
     else:
         # Just Q bars (original behavior)
         colors = ['steelblue'] * (len(layers) - 1) + ['green'] if oracle_Q is not None else ['steelblue'] * len(layers)
-        ax_metrics.bar(x, q_vals, color=colors, edgecolor='black')
+        ax_metrics.bar(x, q_vals, color=colors, edgecolor='black',
+                       yerr=q_err if has_q_stds else None, capsize=3, error_kw={'elinewidth': 1.5, 'capthick': 1.5})
         ax_metrics.set_title('SO(2) Invariance Metric by Layer')
     
     ax_metrics.set_xticks(x)

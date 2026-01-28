@@ -122,78 +122,100 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
         X = torch.tensor(X, dtype=torch.float32)
         y = torch.tensor(y, dtype=torch.float32).unsqueeze(1) if y.ndim == 1 else torch.tensor(y, dtype=torch.float32)
         
-        # Compute Q metric
-        metric_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
-        metric = get_metric("Q", **metric_cfg)
-        Q_values = metric.compute(model, X, device=device)
+        # Get enabled metrics list
+        enabled_metrics = list(cfg.metrics.get("enabled", ["Q"]))
         
-        # Compute Q_h metric (raw activations, no PCA)
-        metric_h_cfg = OmegaConf.to_container(cfg.metrics.get("Q_h", {}), resolve=True)
-        metric_h = get_metric("Q_h", **metric_h_cfg)
-        Q_h_values = metric_h.compute(model, X, device=device)
+        # Initialize result containers
+        Q_values, Q_h_values, RSL_values, SL_values, MI_values = {}, {}, {}, {}, {}
+        oracles = {}
         
-        # Compute RSL metric (relative symmetry loss)
-        rsl_cfg = OmegaConf.to_container(cfg.metrics.get("RSL", {}), resolve=True)
-        rsl_metric = get_metric("RSL", **rsl_cfg)
-        RSL_values = rsl_metric.compute(model, X, device=device)
+        # Compute only enabled metrics
+        if "Q" in enabled_metrics:
+            metric_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
+            metric = get_metric("Q", **metric_cfg)
+            Q_values = metric.compute(model, X, device=device)
+            oracle_Q = compute_oracle_Q(X, y, scalar_field_fn, n_rotations=32, device=device)
+            oracles['Q'] = oracle_Q
+            print(f"  Oracle Q = {oracle_Q:.4f}")
+            print(f"  Q values by layer:")
+            for layer, val in Q_values.items():
+                print(f"    {layer}: Q = {val:.4f}")
         
-        # Compute SL metric (raw symmetry loss)
-        sl_cfg = OmegaConf.to_container(cfg.metrics.get("SL", {}), resolve=True)
-        sl_metric = get_metric("SL", **sl_cfg)
-        SL_values = sl_metric.compute(model, X, device=device)
+        if "Q_h" in enabled_metrics:
+            metric_h_cfg = OmegaConf.to_container(cfg.metrics.get("Q_h", {}), resolve=True)
+            metric_h = get_metric("Q_h", **metric_h_cfg)
+            Q_h_values = metric_h.compute(model, X, device=device)
+            # Q_h doesn't have a separate oracle - it uses Q's oracle conceptually
+            print(f"  Q_h values by layer:")
+            for layer, val in Q_h_values.items():
+                print(f"    {layer}: Q_h = {val:.4f}")
         
-        # Compute MI metric (mutual information)
-        mi_cfg = OmegaConf.to_container(cfg.metrics.get("MI", {}), resolve=True)
-        mi_metric = get_metric("MI", **mi_cfg)
-        MI_values = mi_metric.compute(model, X, device=device)
+        if "RSL" in enabled_metrics:
+            rsl_cfg = OmegaConf.to_container(cfg.metrics.get("RSL", {}), resolve=True)
+            rsl_metric = get_metric("RSL", **rsl_cfg)
+            RSL_values = rsl_metric.compute(model, X, device=device)
+            oracle_RSL = compute_oracle_RSL(X, y, scalar_field_fn, n_rotations=32, device=device)
+            oracles['RSL'] = oracle_RSL
+            print(f"  Oracle RSL = {oracle_RSL:.4f}")
+            print(f"  RSL values by layer:")
+            for layer, val in RSL_values.items():
+                print(f"    {layer}: RSL = {val:.4f}")
         
-        # Compute oracle values for all metrics
-        oracle_Q = compute_oracle_Q(X, y, scalar_field_fn, n_rotations=32, device=device)
-        oracle_RSL = compute_oracle_RSL(X, y, scalar_field_fn, n_rotations=32, device=device)
-        oracle_SL = compute_oracle_SL(X, y, scalar_field_fn, n_rotations=32, device=device)
-        oracle_MI = compute_oracle_MI(X, y, scalar_field_fn, K=mi_cfg.get('K', 16), device=device)
+        if "SL" in enabled_metrics:
+            sl_cfg = OmegaConf.to_container(cfg.metrics.get("SL", {}), resolve=True)
+            sl_metric = get_metric("SL", **sl_cfg)
+            SL_values = sl_metric.compute(model, X, device=device)
+            oracle_SL = compute_oracle_SL(X, y, scalar_field_fn, n_rotations=32, device=device)
+            oracles['SL'] = oracle_SL
+            print(f"  Oracle SL = {oracle_SL:.6f}")
+            print(f"  SL values by layer:")
+            for layer, val in SL_values.items():
+                print(f"    {layer}: SL = {val:.6f}")
         
-        print(f"  Oracle Q = {oracle_Q:.4f}")
-        print(f"  Oracle RSL = {oracle_RSL:.4f}")
-        print(f"  Oracle SL = {oracle_SL:.6f}")
-        print(f"  Oracle MI = {oracle_MI:.4f}")
-        print(f"  Q values by layer:")
-        for layer, val in Q_values.items():
-            print(f"    {layer}: Q = {val:.4f}")
-        print(f"  Q_h values by layer:")
-        for layer, val in Q_h_values.items():
-            print(f"    {layer}: Q_h = {val:.4f}")
-        print(f"  RSL values by layer:")
-        for layer, val in RSL_values.items():
-            print(f"    {layer}: RSL = {val:.4f}")
-        print(f"  SL values by layer:")
-        for layer, val in SL_values.items():
-            print(f"    {layer}: SL = {val:.6f}")
-        print(f"  MI values by layer:")
-        for layer, val in MI_values.items():
-            print(f"    {layer}: MI = {val:.4f}")
+        if "MI" in enabled_metrics:
+            mi_cfg = OmegaConf.to_container(cfg.metrics.get("MI", {}), resolve=True)
+            mi_metric = get_metric("MI", **mi_cfg)
+            MI_values = mi_metric.compute(model, X, device=device)
+            oracle_MI = compute_oracle_MI(X, y, scalar_field_fn, K=mi_cfg.get('K', 16), device=device)
+            oracles['MI'] = oracle_MI
+            print(f"  Oracle MI = {oracle_MI:.4f}")
+            print(f"  MI values by layer:")
+            for layer, val in MI_values.items():
+                print(f"    {layer}: MI = {val:.4f}")
         
         # Save artifacts if output_dir provided
         if not use_temp:
-            # Save metric values
-            all_metric_values = {"Q": Q_values, "Q_h": Q_h_values, "RSL": RSL_values, "SL": SL_values, "MI": MI_values}
+            # Save metric values (only enabled metrics)
+            all_metric_values = {}
+            if "Q" in enabled_metrics:
+                all_metric_values["Q"] = Q_values
+            if "Q_h" in enabled_metrics:
+                all_metric_values["Q_h"] = Q_h_values
+            if "RSL" in enabled_metrics:
+                all_metric_values["RSL"] = RSL_values
+            if "SL" in enabled_metrics:
+                all_metric_values["SL"] = SL_values
+            if "MI" in enabled_metrics:
+                all_metric_values["MI"] = MI_values
+            
             with open(save_dir / 'metric_values.json', 'w') as f:
                 json.dump(all_metric_values, f, indent=2)
             
-            # Save Q plot
-            plot_Q_vs_layer(Q_values, save_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q, run_name=name)
+            # Save plots only for enabled metrics
+            if "Q" in enabled_metrics:
+                plot_Q_vs_layer(Q_values, save_dir / 'Q_vs_layer.png', oracle_Q=oracles.get('Q'), run_name=name)
             
-            # Save Q_h plot (not included in summary)
-            plot_Q_h_vs_layer(Q_h_values, save_dir / 'Q_h_vs_layer.png', run_name=name)
+            if "Q_h" in enabled_metrics:
+                plot_Q_h_vs_layer(Q_h_values, save_dir / 'Q_h_vs_layer.png', run_name=name)
             
-            # Save RSL plot
-            plot_rsl_vs_layer(RSL_values, save_dir / 'RSL_vs_layer.png', oracle_RSL=oracle_RSL, run_name=name)
+            if "RSL" in enabled_metrics:
+                plot_rsl_vs_layer(RSL_values, save_dir / 'RSL_vs_layer.png', oracle_RSL=oracles.get('RSL'), run_name=name)
             
-            # Save SL plot
-            plot_sl_vs_layer(SL_values, save_dir / 'SL_vs_layer.png', oracle_SL=oracle_SL, run_name=name)
+            if "SL" in enabled_metrics:
+                plot_sl_vs_layer(SL_values, save_dir / 'SL_vs_layer.png', oracle_SL=oracles.get('SL'), run_name=name)
             
-            # Save MI plot
-            plot_mi_vs_layer(MI_values, save_dir / 'MI_vs_layer.png', oracle_MI=oracle_MI, run_name=name)
+            if "MI" in enabled_metrics:
+                plot_mi_vs_layer(MI_values, save_dir / 'MI_vs_layer.png', oracle_MI=oracles.get('MI'), run_name=name)
             
             # Save loss curves if we trained
             if cfg.train.total_steps > 0:
@@ -202,16 +224,17 @@ def run_single_field(cfg: DictConfig, scalar_field_fn, device: torch.device,
             # Save regression surface
             plot_regression_surface(model, full_dataset, save_dir / 'regression_surface.png', device)
             
-            # Save combined summary plot (Q and MI shown, Q_h excluded)
-            plot_run_summary(
-                history, Q_values, oracle_Q, model, full_dataset, device,
-                save_dir / 'summary.png', run_name=name,
-                MI_values=MI_values, oracle_MI=oracle_MI
-            )
+            # Save combined summary plot (Q and MI if enabled)
+            if "Q" in enabled_metrics:
+                plot_run_summary(
+                    history, Q_values, oracles.get('Q'), model, full_dataset, device,
+                    save_dir / 'summary.png', run_name=name,
+                    MI_values=MI_values if "MI" in enabled_metrics else None,
+                    oracle_MI=oracles.get('MI')
+                )
             
             plt.close('all')
         
-        oracles = {'Q': oracle_Q, 'RSL': oracle_RSL, 'SL': oracle_SL, 'MI': oracle_MI}
         return Q_values, oracles, Q_h_values, RSL_values, SL_values, MI_values, history
         
     finally:

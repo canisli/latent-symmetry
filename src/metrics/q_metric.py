@@ -203,6 +203,7 @@ def compute_Q(
     n_rotations: int = 32,
     explained_variance: float = 0.95,
     device: torch.device = None,
+    return_std: bool = False,
 ) -> float:
     """
     Compute orbit variance metric Q_l for a layer.
@@ -218,9 +219,10 @@ def compute_Q(
         n_rotations: Number of rotation pairs to sample per point.
         explained_variance: Fraction of variance for PCA (ignored for output layer).
         device: Torch device.
+        return_std: If True, return (Q, Q_std) tuple with standard error.
     
     Returns:
-        Q value for the layer.
+        Q value for the layer, or (Q, Q_std) if return_std=True.
     """
     if device is None:
         device = torch.device('cpu')
@@ -256,7 +258,8 @@ def compute_Q(
     denominator = z_diff_sq[mask].mean()
     
     # Compute numerator: E[||z(g1*x) - z(g2*x)||^2]
-    numerator = 0.0
+    # Track individual samples for variance estimation
+    numerator_samples = []
     for _ in range(n_rotations):
         theta1 = sample_rotations(N, device=device)
         theta2 = sample_rotations(N, device=device)
@@ -271,11 +274,24 @@ def compute_Q(
         z1 = project_activations(h1, U, mu)
         z2 = project_activations(h2, U, mu)
         
-        numerator += ((z1 - z2) ** 2).sum(dim=-1).mean()
+        sample_val = ((z1 - z2) ** 2).sum(dim=-1).mean().item()
+        numerator_samples.append(sample_val)
     
-    numerator /= n_rotations
+    numerator_samples = torch.tensor(numerator_samples)
+    numerator = numerator_samples.mean()
     
-    Q = (numerator / denominator).item()
+    denom_val = denominator.item()
+    Q = (numerator / denom_val).item()
+    
+    if return_std:
+        # Standard error of Q = std(numerator_samples) / denominator / sqrt(n)
+        # This is the standard error of the mean Q estimate
+        if denom_val > 1e-10:
+            Q_std = (numerator_samples.std() / denom_val / (n_rotations ** 0.5)).item()
+        else:
+            Q_std = float('nan')
+        return Q, Q_std
+    
     return Q
 
 
@@ -285,6 +301,7 @@ def compute_all_Q(
     n_rotations: int = 32,
     explained_variance: float = 0.95,
     device: torch.device = None,
+    return_std: bool = False,
 ) -> Dict[str, float]:
     """
     Compute Q for all layers in the model.
@@ -295,21 +312,34 @@ def compute_all_Q(
         n_rotations: Number of rotation pairs to sample per point.
         explained_variance: Fraction of variance for PCA.
         device: Torch device.
+        return_std: If True, return (Q_values, Q_stds) tuple with standard errors.
     
     Returns:
         Dictionary mapping layer names to Q values.
+        If return_std=True, returns tuple of (Q_values, Q_stds) dictionaries.
     """
     Q_values = {}
+    Q_stds = {} if return_std else None
     
     # Hidden layers (1-indexed)
     for layer_idx in range(1, model.num_linear_layers):
-        Q = compute_Q(model, data, layer_idx, n_rotations, explained_variance, device)
-        Q_values[f'layer_{layer_idx}'] = Q
+        result = compute_Q(model, data, layer_idx, n_rotations, explained_variance, device, return_std=return_std)
+        if return_std:
+            Q_values[f'layer_{layer_idx}'] = result[0]
+            Q_stds[f'layer_{layer_idx}'] = result[1]
+        else:
+            Q_values[f'layer_{layer_idx}'] = result
     
     # Output layer
-    Q_out = compute_Q(model, data, -1, n_rotations, explained_variance, device)
-    Q_values['output'] = Q_out
+    result = compute_Q(model, data, -1, n_rotations, explained_variance, device, return_std=return_std)
+    if return_std:
+        Q_values['output'] = result[0]
+        Q_stds['output'] = result[1]
+    else:
+        Q_values['output'] = result
     
+    if return_std:
+        return Q_values, Q_stds
     return Q_values
 
 
@@ -484,15 +514,28 @@ class QMetric(BaseMetric):
         model: nn.Module,
         data: torch.Tensor,
         device: torch.device = None,
+        return_std: bool = False,
         **kwargs
     ) -> Dict[str, float]:
-        """Compute Q for all layers."""
+        """Compute Q for all layers.
+        
+        Args:
+            model: Neural network model.
+            data: Input data tensor.
+            device: Torch device.
+            return_std: If True, return (Q_values, Q_stds) tuple.
+            **kwargs: Override n_rotations or explained_variance.
+            
+        Returns:
+            Dict of Q values, or (Q_values, Q_stds) if return_std=True.
+        """
         return compute_all_Q(
             model, 
             data, 
             n_rotations=kwargs.get('n_rotations', self.n_rotations),
             explained_variance=kwargs.get('explained_variance', self.explained_variance),
-            device=device
+            device=device,
+            return_std=return_std,
         )
     
     def plot(
