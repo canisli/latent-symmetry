@@ -18,3 +18,6 @@ python scripts/train.py train.lambda_sym=0.01 train.sym_layers=[-1] train.sym_pe
 
 # 5. Make a movie
 python scripts/make_gif.py <fdir>
+
+# 6. Benchmark penalties
+python scripts/benchmark_penalties.py

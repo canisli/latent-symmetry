@@ -10,10 +10,6 @@ from latsym.symmetry_penalty import (
     PeriodicPCAOrbitVariancePenalty,
 )
 from latsym.metrics import get_metric
-from latsym.metrics.q_metric import compute_oracle_Q, plot_Q_vs_layer, plot_Q_h_vs_layer
-from latsym.metrics.rsl_metric import plot_rsl_vs_layer
-from latsym.metrics.sl_metric import plot_sl_vs_layer
-from latsym.metrics.mi_metric import compute_oracle_MI
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -58,83 +54,60 @@ def compute_and_plot_metrics(
         lambda_sym: Lambda value for symmetry penalty.
     
     Returns:
-        Dictionary with all metric values.
+        Dictionary with all metric values, oracle Q, and Q values.
     """
     # Get full dataset as tensor
     X, y = full_dataset.get_numpy()
     X = torch.tensor(X, dtype=torch.float32)
     y = torch.tensor(y, dtype=torch.float32).unsqueeze(1) if y.ndim == 1 else torch.tensor(y, dtype=torch.float32)
+    scalar_field_fn = full_dataset.scalar_field_fn
     
-    # Compute Q metric
-    metric_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
-    metric = get_metric("Q", **metric_cfg)
-    Q_values = metric.compute(model, X, device=device)
+    # Metrics to compute (hardcoded for train.py - Q, Q_h, RSL, SL)
+    enabled_metrics = ["Q", "Q_h", "RSL", "SL"]
     
-    # Compute Q_h metric (raw activations, no PCA)
-    metric_h_cfg = OmegaConf.to_container(cfg.metrics.get("Q_h", {}), resolve=True)
-    metric_h = get_metric("Q_h", **metric_h_cfg)
-    Q_h_values = metric_h.compute(model, X, device=device)
+    # Compute all metrics using OOP pattern
+    all_metric_values = {}
+    oracles = {}
     
-    # Compute RSL metric (relative symmetry loss)
-    rsl_cfg = OmegaConf.to_container(cfg.metrics.get("RSL", {}), resolve=True)
-    rsl_metric = get_metric("RSL", **rsl_cfg)
-    RSL_values = rsl_metric.compute(model, X, device=device)
-    
-    # Compute SL metric (raw symmetry loss)
-    sl_cfg = OmegaConf.to_container(cfg.metrics.get("SL", {}), resolve=True)
-    sl_metric = get_metric("SL", **sl_cfg)
-    SL_values = sl_metric.compute(model, X, device=device)
-    
-    # Compute oracle Q
-    oracle_Q = compute_oracle_Q(X, y, full_dataset.scalar_field_fn, n_rotations=32, device=device)
-    
-    # Log metrics
     log.info(f"\n{'='*40}")
     log.info("Metric Results")
     log.info(f"{'='*40}")
-    log.info(f"Oracle Q = {oracle_Q:.4f}")
-    log.info(f"Q values by layer:")
-    for layer, val in Q_values.items():
-        log.info(f"  {layer}: Q = {val:.4f}")
-    log.info(f"Q_h values by layer:")
-    for layer, val in Q_h_values.items():
-        log.info(f"  {layer}: Q_h = {val:.4f}")
-    log.info(f"RSL values by layer:")
-    for layer, val in RSL_values.items():
-        log.info(f"  {layer}: RSL = {val:.4f}")
-    log.info(f"SL values by layer:")
-    for layer, val in SL_values.items():
-        log.info(f"  {layer}: SL = {val:.6f}")
+    
+    for metric_name in enabled_metrics:
+        metric_cfg = OmegaConf.to_container(cfg.metrics.get(metric_name, {}), resolve=True)
+        metric = get_metric(metric_name, **metric_cfg)
+        
+        # Compute metric values
+        values = metric.compute(model, X, device=device)
+        all_metric_values[metric_name] = values
+        
+        # Compute oracle if metric has one
+        oracle = None
+        if metric.has_oracle:
+            oracle = metric.compute_oracle(X, y, scalar_field_fn, device=device)
+            oracles[metric_name] = oracle
+        
+        # Log values
+        metric.log_values(values, oracle, logger=log.info)
+        
+        # Plot
+        metric.plot(
+            values, output_dir / f'{metric_name}_vs_layer.png',
+            oracle=oracle, run_name=run_name,
+            field_name=field_name, sym_penalty_type=sym_penalty_type,
+            sym_layers=sym_layers, lambda_sym=lambda_sym
+        )
+    
+    # Add oracles to saved values for backward compatibility
+    all_metric_values["oracle_Q"] = oracles.get("Q")
     
     # Save metric values
-    all_metric_values = {
-        "Q": Q_values,
-        "Q_h": Q_h_values,
-        "RSL": RSL_values,
-        "SL": SL_values,
-        "oracle_Q": oracle_Q,
-    }
     with open(output_dir / 'metric_values.json', 'w') as f:
         json.dump(all_metric_values, f, indent=2)
     
-    # Save individual metric plots
-    plot_Q_vs_layer(
-        Q_values, output_dir / 'Q_vs_layer.png', oracle_Q=oracle_Q, run_name=run_name,
-        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
-    )
-    plot_Q_h_vs_layer(
-        Q_h_values, output_dir / 'Q_h_vs_layer.png', run_name=run_name,
-        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
-    )
-    plot_rsl_vs_layer(
-        RSL_values, output_dir / 'RSL_vs_layer.png', run_name=run_name,
-        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
-    )
-    plot_sl_vs_layer(
-        SL_values, output_dir / 'SL_vs_layer.png', run_name=run_name,
-        field_name=field_name, sym_penalty_type=sym_penalty_type, sym_layers=sym_layers, lambda_sym=lambda_sym
-    )
-    
+    # Return for backward compatibility
+    Q_values = all_metric_values.get("Q", {})
+    oracle_Q = oracles.get("Q")
     return all_metric_values, oracle_Q, Q_values
 
 
@@ -256,11 +229,11 @@ def main(cfg: DictConfig):
         X_tensor = torch.tensor(X_full, dtype=torch.float32)
         y_tensor = torch.tensor(y_full, dtype=torch.float32).unsqueeze(1) if y_full.ndim == 1 else torch.tensor(y_full, dtype=torch.float32)
         
-        # Pre-compute oracle Q (fast - just variance computation)
-        oracle_Q = compute_oracle_Q(X_tensor, y_tensor, full_dataset.scalar_field_fn, n_rotations=32, device=device)
-        
-        # Get metric configs
+        # Pre-compute oracle Q using OOP pattern (fast - just variance computation)
         q_cfg = OmegaConf.to_container(cfg.metrics.get("Q", {}), resolve=True)
+        q_metric = get_metric("Q", **q_cfg)
+        oracle_Q = q_metric.compute_oracle(X_tensor, y_tensor, full_dataset.scalar_field_fn, device=device)
+        
         total_steps = cfg.train.total_steps
         
         # Get field name for frame titles
@@ -269,8 +242,8 @@ def main(cfg: DictConfig):
         def make_dynamics_frame(step: int, model_snapshot: nn.Module, history: dict):
             """Generate a summary frame at the current training step."""
             # Compute Q metric with standard errors (MI is too slow - trains a classifier each time)
-            q_metric = get_metric("Q", **q_cfg)
-            Q_values, Q_stds = q_metric.compute(model_snapshot, X_tensor, device=device, return_std=True)
+            q_metric_inner = get_metric("Q", **q_cfg)
+            Q_values, Q_stds = q_metric_inner.compute(model_snapshot, X_tensor, device=device, return_std=True)
             
             # Generate frame with fixed x-axis
             plot_run_summary(

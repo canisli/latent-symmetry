@@ -214,6 +214,8 @@ class SLMetric(BaseMetric):
     """
     
     name = "SL"
+    has_oracle = True
+    log_format = ".6f"  # SL values are typically small, need more precision
     
     def __init__(self, n_rotations: int = 32, **kwargs):
         super().__init__(**kwargs)
@@ -234,12 +236,30 @@ class SLMetric(BaseMetric):
             device=device
         )
     
+    def compute_oracle(
+        self,
+        data: torch.Tensor,
+        targets: torch.Tensor,
+        scalar_field_fn,
+        device: torch.device = None,
+        **kwargs
+    ) -> float:
+        """Compute oracle SL value (perfect predictor)."""
+        return compute_oracle_SL(
+            data, targets, scalar_field_fn,
+            n_rotations=kwargs.get('n_rotations', self.n_rotations),
+            device=device,
+        )
+    
     def plot(
         self,
         values: Dict[str, float],
         save_path: Path = None,
+        oracle: float = None,
         **kwargs
     ) -> None:
         """Plot SL values."""
+        # Support both 'oracle' and legacy 'oracle_SL' kwargs
+        oracle_val = oracle if oracle is not None else kwargs.get('oracle_SL', None)
         run_name = kwargs.get('run_name', None)
-        plot_sl_vs_layer(values, save_path, run_name=run_name)
+        plot_sl_vs_layer(values, save_path, oracle_SL=oracle_val, run_name=run_name)

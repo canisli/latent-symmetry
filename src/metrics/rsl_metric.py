@@ -227,6 +227,7 @@ class RSLMetric(BaseMetric):
     """
     
     name = "RSL"
+    has_oracle = True
     
     def __init__(self, n_rotations: int = 32, epsilon: float = 1e-8, **kwargs):
         super().__init__(**kwargs)
@@ -249,12 +250,31 @@ class RSLMetric(BaseMetric):
             device=device
         )
     
+    def compute_oracle(
+        self,
+        data: torch.Tensor,
+        targets: torch.Tensor,
+        scalar_field_fn,
+        device: torch.device = None,
+        **kwargs
+    ) -> float:
+        """Compute oracle RSL value (perfect predictor)."""
+        return compute_oracle_RSL(
+            data, targets, scalar_field_fn,
+            n_rotations=kwargs.get('n_rotations', self.n_rotations),
+            epsilon=kwargs.get('epsilon', self.epsilon),
+            device=device,
+        )
+    
     def plot(
         self,
         values: Dict[str, float],
         save_path: Path = None,
+        oracle: float = None,
         **kwargs
     ) -> None:
         """Plot RSL values."""
+        # Support both 'oracle' and legacy 'oracle_RSL' kwargs
+        oracle_val = oracle if oracle is not None else kwargs.get('oracle_RSL', None)
         run_name = kwargs.get('run_name', None)
-        plot_rsl_vs_layer(values, save_path, run_name=run_name)
+        plot_rsl_vs_layer(values, save_path, oracle_RSL=oracle_val, run_name=run_name)

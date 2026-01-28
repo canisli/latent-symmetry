@@ -459,6 +459,7 @@ class QMetric(BaseMetric):
     """
     
     name = "Q"
+    has_oracle = True
     
     def __init__(self, n_rotations: int = 32, explained_variance: float = 0.95, **kwargs):
         super().__init__(**kwargs)
@@ -494,16 +495,33 @@ class QMetric(BaseMetric):
             return_std=return_std,
         )
     
+    def compute_oracle(
+        self,
+        data: torch.Tensor,
+        targets: torch.Tensor,
+        scalar_field_fn,
+        device: torch.device = None,
+        **kwargs
+    ) -> float:
+        """Compute oracle Q value (perfect predictor)."""
+        return compute_oracle_Q(
+            data, targets, scalar_field_fn,
+            n_rotations=kwargs.get('n_rotations', self.n_rotations),
+            device=device,
+        )
+    
     def plot(
         self,
         values: Dict[str, float],
         save_path: Path = None,
+        oracle: float = None,
         **kwargs
     ) -> None:
         """Plot Q values with optional oracle reference line."""
-        oracle_Q = kwargs.get('oracle_Q', None)
+        # Support both 'oracle' and legacy 'oracle_Q' kwargs
+        oracle_val = oracle if oracle is not None else kwargs.get('oracle_Q', None)
         run_name = kwargs.get('run_name', None)
-        plot_Q_vs_layer(values, save_path, oracle_Q=oracle_Q, run_name=run_name)
+        plot_Q_vs_layer(values, save_path, oracle_Q=oracle_val, run_name=run_name)
 
 
 @register("Q_h")
@@ -522,6 +540,7 @@ class Q_hMetric(BaseMetric):
     
     name = "Q_h"
     include_in_summary = False  # Not included in summary plots
+    has_oracle = False  # Q_h uses Q's oracle conceptually
     
     def __init__(self, n_rotations: int = 32, **kwargs):
         super().__init__(**kwargs)
@@ -546,6 +565,7 @@ class Q_hMetric(BaseMetric):
         self,
         values: Dict[str, float],
         save_path: Path = None,
+        oracle: float = None,
         **kwargs
     ) -> None:
         """Plot Q_h values."""

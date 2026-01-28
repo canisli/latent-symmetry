@@ -8,6 +8,7 @@ This module provides common functions used by both:
 
 import torch
 import torch.nn as nn
+from contextlib import nullcontext
 from typing import Tuple, Callable, Optional
 
 from .groups.so2 import rotate, sample_rotations
@@ -148,7 +149,7 @@ def compute_orbit_variance(
     N = data.shape[0]
     total_variance = torch.tensor(0.0, device=device)
     
-    context = torch.no_grad() if not requires_grad else _nullcontext()
+    context = torch.no_grad() if not requires_grad else nullcontext()
     
     with context:
         for _ in range(n_rotations):
@@ -202,7 +203,7 @@ def compute_relative_orbit_variance(
     N = data.shape[0]
     total_rsl = torch.tensor(0.0, device=device)
     
-    context = torch.no_grad() if not requires_grad else _nullcontext()
+    context = torch.no_grad() if not requires_grad else nullcontext()
     
     with context:
         for _ in range(n_rotations):

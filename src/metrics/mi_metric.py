@@ -638,6 +638,7 @@ class MIMetric(BaseMetric):
     """
     
     name = "MI"
+    has_oracle = True
     
     def __init__(
         self,
@@ -683,13 +684,38 @@ class MIMetric(BaseMetric):
             generator=generator,
         )
     
+    def compute_oracle(
+        self,
+        data: torch.Tensor,
+        targets: torch.Tensor,
+        scalar_field_fn,
+        device: torch.device = None,
+        **kwargs
+    ) -> float:
+        """Compute oracle MI value (perfect predictor)."""
+        return compute_oracle_MI(
+            data, targets, scalar_field_fn,
+            K=kwargs.get('K', self.K),
+            n_pairs_per_point=kwargs.get('n_pairs_per_point', self.n_pairs_per_point),
+            classifier_hidden=kwargs.get('classifier_hidden', self.classifier_hidden),
+            classifier_steps=kwargs.get('classifier_steps', self.classifier_steps),
+            lr=kwargs.get('lr', self.lr),
+            batch_size=kwargs.get('batch_size', self.batch_size),
+            test_fraction=kwargs.get('test_fraction', self.test_fraction),
+            device=device,
+            generator=kwargs.get('generator', None),
+        )
+    
     def plot(
         self,
         values: Dict[str, float],
         save_path: Path = None,
+        oracle: float = None,
         **kwargs
     ) -> None:
         """Plot MI values."""
+        # Support both 'oracle' and legacy 'oracle_MI' kwargs
+        oracle_val = oracle if oracle is not None else kwargs.get('oracle_MI', None)
         run_name = kwargs.get('run_name', None)
         null_values = kwargs.get('null_values', None)
-        plot_mi_vs_layer(values, save_path, run_name=run_name, null_values=null_values)
+        plot_mi_vs_layer(values, save_path, oracle_MI=oracle_val, run_name=run_name, null_values=null_values)
