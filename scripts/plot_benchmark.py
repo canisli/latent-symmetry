@@ -2,8 +2,9 @@
 """
 Plot benchmark results from benchmark_penalties.py.
 
-Plots loss as a function of lambda with separate lines for each penalized layer.
-Supports aggregating across multiple seeds with 95% confidence interval error bars.
+Generates:
+1. loss_vs_lambda.png - Loss as function of λ with lines for each penalized layer
+2. Q_vs_layer/ folder - Q as function of layer for each (λ, penalized_layer) combo
 
 Usage:
     python scripts/plot_benchmark.py results/benchmark/
@@ -17,6 +18,7 @@ from pathlib import Path
 from collections import defaultdict
 
 import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -24,15 +26,7 @@ from scipy import stats
 
 
 def load_csv_files(paths: list) -> pd.DataFrame:
-    """
-    Load CSV files from paths (can be files or directories).
-    
-    Args:
-        paths: List of file paths or directory paths.
-    
-    Returns:
-        Combined DataFrame.
-    """
+    """Load CSV files from paths (can be files or directories)."""
     csv_files = []
     for p in paths:
         path = Path(p)
@@ -63,6 +57,7 @@ def load_csv_files(paths: list) -> pd.DataFrame:
 
 def compute_stats(values: list) -> tuple:
     """Compute mean and 95% CI for a list of values."""
+    values = [v for v in values if not np.isnan(v)]
     n = len(values)
     if n == 0:
         return np.nan, np.nan
@@ -76,54 +71,8 @@ def compute_stats(values: list) -> tuple:
     return mean, ci
 
 
-def aggregate_by_layer_lambda(df: pd.DataFrame) -> dict:
-    """
-    Aggregate data by (penalized_layer, lambda_sym).
-    
-    Returns:
-        Dict mapping (layer, lambda) -> {'loss': [values], 'avg_Q': [values]}
-    """
-    agg = defaultdict(lambda: {'loss': [], 'avg_Q': []})
-    
-    # Compute avg_Q from per-layer columns if needed
-    q_cols = [c for c in df.columns if c.startswith('Q_layer_') and not c.startswith('Q_h_')]
-    
-    for _, row in df.iterrows():
-        layer = row.get('penalized_layer', '')
-        if pd.isna(layer) or layer == '':
-            layer = None
-        else:
-            layer = int(layer)
-        
-        lambda_val = row['lambda_sym']
-        loss = row['best_val_loss']
-        
-        # Compute avg_Q
-        if q_cols:
-            q_vals = [row[c] for c in q_cols if pd.notna(row[c])]
-            avg_q = np.mean(q_vals) if q_vals else np.nan
-        else:
-            avg_q = row.get('avg_Q', np.nan)
-        
-        agg[(layer, lambda_val)]['loss'].append(loss)
-        agg[(layer, lambda_val)]['avg_Q'].append(avg_q)
-    
-    return agg
-
-
 def parse_layer_spec(spec: str) -> set:
-    """
-    Parse layer specification string.
-    
-    Args:
-        spec: String like "n123456l" where:
-            - 'n' = None (baseline)
-            - '1'-'9' = layer numbers
-            - 'l' = layer -1 (output)
-    
-    Returns:
-        Set of layer values to include.
-    """
+    """Parse layer spec: n=baseline, 1-9=layers, l=output (-1)."""
     layers = set()
     for c in spec.lower():
         if c == 'n':
@@ -135,53 +84,49 @@ def parse_layer_spec(spec: str) -> set:
     return layers
 
 
+def layer_sort_key(x):
+    """Sort key: numeric layers first, then -1, then None."""
+    if x is None:
+        return (2, 0)
+    elif x == -1:
+        return (1, 0)
+    else:
+        return (0, x)
+
+
 def plot_loss_vs_lambda(df: pd.DataFrame, output_path: Path, layers_to_plot: set = None):
-    """
-    Plot loss and Q metric as functions of lambda for each penalized layer.
-    """
-    agg = aggregate_by_layer_lambda(df)
+    """Plot loss as function of lambda for each penalized layer."""
+    # Aggregate by (penalized_layer, lambda)
+    agg = defaultdict(list)
+    for _, row in df.iterrows():
+        layer = row.get('penalized_layer', '')
+        layer = None if (pd.isna(layer) or layer == '') else int(layer)
+        agg[(layer, row['lambda_sym'])].append(row['best_val_loss'])
     
-    # Compute stats per (layer, lambda)
-    layer_data = defaultdict(lambda: {'lambda': [], 'loss_mean': [], 'loss_ci': [],
-                                       'q_mean': [], 'q_ci': []})
-    
-    for (layer, lambda_val), values in agg.items():
-        loss_mean, loss_ci = compute_stats(values['loss'])
-        q_mean, q_ci = compute_stats(values['avg_Q'])
-        
+    # Compute stats
+    layer_data = defaultdict(lambda: {'lambda': [], 'mean': [], 'ci': []})
+    for (layer, lambda_val), losses in agg.items():
+        mean, ci = compute_stats(losses)
         layer_data[layer]['lambda'].append(lambda_val)
-        layer_data[layer]['loss_mean'].append(loss_mean)
-        layer_data[layer]['loss_ci'].append(loss_ci)
-        layer_data[layer]['q_mean'].append(q_mean)
-        layer_data[layer]['q_ci'].append(q_ci)
+        layer_data[layer]['mean'].append(mean)
+        layer_data[layer]['ci'].append(ci)
     
-    # Filter layers if specified
+    # Filter layers
     if layers_to_plot:
         layer_data = {k: v for k, v in layer_data.items() if k in layers_to_plot}
     
     if not layer_data:
-        print("No data to plot after filtering.")
+        print("No data to plot.")
         return
     
-    # Sort layers: numeric first, then -1, then None
-    def layer_sort_key(x):
-        if x is None:
-            return (2, 0)
-        elif x == -1:
-            return (1, 0)
-        else:
-            return (0, x)
-    
     sorted_layers = sorted(layer_data.keys(), key=layer_sort_key)
-    num_layers = len(sorted_layers)
+    print(f"Plotting {len(sorted_layers)} layers: {sorted_layers}")
     
-    print(f"Plotting {num_layers} layers: {sorted_layers}")
+    # Plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.viridis(np.linspace(0, 1, len(sorted_layers)))
     
-    # Create figure
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    colors = plt.cm.viridis(np.linspace(0, 1, num_layers))
-    
-    # Collect all lambda values for baseline horizontal line range
+    # Get lambda range for baseline
     all_lambdas = []
     for layer in sorted_layers:
         if layer is not None:
@@ -190,63 +135,36 @@ def plot_loss_vs_lambda(df: pd.DataFrame, output_path: Path, layers_to_plot: set
     for idx, layer in enumerate(sorted_layers):
         data = layer_data[layer]
         lambdas = np.array(data['lambda'])
-        loss_mean = np.array(data['loss_mean'])
-        loss_ci = np.array(data['loss_ci'])
-        q_mean = np.array(data['q_mean'])
-        q_ci = np.array(data['q_ci'])
-        
+        means = np.array(data['mean'])
+        cis = np.array(data['ci'])
         label = 'Baseline' if layer is None else f'Layer {layer}'
         
         if layer is None:
-            # Baseline: horizontal line with shaded CI
-            if len(loss_mean) > 0 and all_lambdas:
+            # Baseline: horizontal line
+            if len(means) > 0 and all_lambdas:
                 x_min, x_max = min(all_lambdas), max(all_lambdas)
-                ax1.axhline(y=loss_mean[0], color=colors[idx], linestyle='--',
-                           linewidth=1.5, label=label)
-                ax1.fill_between([x_min, x_max], loss_mean[0] - loss_ci[0],
-                                loss_mean[0] + loss_ci[0], color=colors[idx], alpha=0.2)
-                
-                ax2.axhline(y=q_mean[0], color=colors[idx], linestyle='--',
-                           linewidth=1.5, label=label)
-                ax2.fill_between([x_min, x_max], q_mean[0] - q_ci[0],
-                                q_mean[0] + q_ci[0], color=colors[idx], alpha=0.2)
+                ax.axhline(y=means[0], color=colors[idx], linestyle='--', linewidth=1.5, label=label)
+                ax.fill_between([x_min, x_max], means[0] - cis[0], means[0] + cis[0],
+                               color=colors[idx], alpha=0.2)
         else:
             # Sort by lambda
             sort_idx = np.argsort(lambdas)
-            lambdas = lambdas[sort_idx]
-            loss_mean = loss_mean[sort_idx]
-            loss_ci = loss_ci[sort_idx]
-            q_mean = q_mean[sort_idx]
-            q_ci = q_ci[sort_idx]
-            
-            # Filter to positive lambdas for log scale
+            lambdas, means, cis = lambdas[sort_idx], means[sort_idx], cis[sort_idx]
             mask = lambdas > 0
             if np.any(mask):
-                ax1.errorbar(lambdas[mask], loss_mean[mask], yerr=loss_ci[mask],
-                            fmt='o-', linewidth=1.5, markersize=4, capsize=3,
-                            label=label, color=colors[idx])
-                ax2.errorbar(lambdas[mask], q_mean[mask], yerr=q_ci[mask],
-                            fmt='o-', linewidth=1.5, markersize=4, capsize=3,
-                            label=label, color=colors[idx])
+                ax.errorbar(lambdas[mask], means[mask], yerr=cis[mask],
+                           fmt='o-', linewidth=1.5, markersize=4, capsize=3,
+                           label=label, color=colors[idx])
     
-    # Configure axes
-    ax1.set_xlabel('λ (penalty weight)')
-    ax1.set_ylabel('Best Validation Loss')
-    ax1.set_title('Task Loss vs Penalty Strength')
-    ax1.set_xscale('log')
-    ax1.set_yscale('log')
-    ax1.legend(fontsize=8)
-    ax1.grid(True, alpha=0.3)
+    ax.set_xlabel('λ (penalty weight)')
+    ax.set_ylabel('Best Validation Loss')
+    ax.set_title('Task Loss vs Penalty Strength')
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
     
-    ax2.set_xlabel('λ (penalty weight)')
-    ax2.set_ylabel('Average Q')
-    ax2.set_title('Symmetry Metric vs Penalty Strength')
-    ax2.set_xscale('log')
-    ax2.legend(fontsize=8)
-    ax2.grid(True, alpha=0.3)
-    
-    # Extract info for suptitle
-    if 'num_hidden_layers' in df.columns and 'hidden_dim' in df.columns:
+    if 'num_hidden_layers' in df.columns:
         n_layers = df['num_hidden_layers'].iloc[0]
         hidden_dim = df['hidden_dim'].iloc[0]
         n_seeds = df['seed'].nunique()
@@ -258,53 +176,172 @@ def plot_loss_vs_lambda(df: pd.DataFrame, output_path: Path, layers_to_plot: set
     print(f"Saved: {output_path}")
 
 
+def plot_Q_vs_layer_single(q_means: list, q_cis: list, layer_labels: list, 
+                           save_path: Path, title: str, penalized_layer_idx: int = None,
+                           oracle_q: float = None):
+    """
+    Plot Q vs layer using bar charts (linear and log scale).
+    
+    Based on latsym.metrics.plotting.plot_metric_vs_layer style.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    x = np.arange(len(layer_labels))
+    color = 'steelblue'
+    
+    # Add oracle if provided
+    if oracle_q is not None:
+        layer_labels = layer_labels + ['oracle']
+        q_means = q_means + [oracle_q]
+        q_cis = q_cis + [0.0]
+        colors = [color] * (len(layer_labels) - 1) + ['green']
+        x = np.arange(len(layer_labels))
+    else:
+        colors = [color] * len(layer_labels)
+    
+    # Highlight penalized layer in red
+    if penalized_layer_idx is not None and 0 <= penalized_layer_idx < len(colors):
+        colors[penalized_layer_idx] = 'red'
+    
+    for ax_idx, (ax, scale) in enumerate([(axes[0], 'linear'), (axes[1], 'log')]):
+        # Bar plot with error bars
+        bars = ax.bar(x, q_means, color=colors, edgecolor='black', alpha=0.8)
+        ax.errorbar(x, q_means, yerr=q_cis, fmt='none', ecolor='black', capsize=3)
+        
+        ax.set_xticks(x)
+        ax.set_xticklabels(layer_labels, rotation=45, ha='right')
+        ax.set_xlabel('Layer')
+        ax.set_ylabel('Q (orbit variance ratio)')
+        ax.grid(axis='y', alpha=0.3)
+        ax.set_title(scale.capitalize())
+        
+        if scale == 'linear':
+            ax.set_ylim(bottom=0)
+        else:
+            ax.set_yscale('log')
+            # Set floor for log scale
+            min_val = min([v for v in q_means if v > 0], default=1e-6)
+            ax.set_ylim(bottom=min_val * 0.5)
+    
+    fig.suptitle(title, fontsize=11, fontweight='bold')
+    plt.tight_layout()
+    fig.subplots_adjust(top=0.88)
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def plot_Q_vs_layer(df: pd.DataFrame, output_dir: Path):
+    """
+    For each (lambda, penalized_layer) combo, plot Q as function of layer index.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Get Q column names, sorted by layer index
+    q_cols = sorted([c for c in df.columns if c.startswith('Q_layer_') and not c.startswith('Q_h_')],
+                    key=lambda x: (0, int(x.split('_')[-1])) if x != 'Q_layer_-1' else (1, 0))
+    
+    if not q_cols:
+        print("No Q_layer columns found.")
+        return
+    
+    # Extract layer indices and labels
+    layer_indices = []
+    layer_labels = []
+    for c in q_cols:
+        idx = int(c.replace('Q_layer_', ''))
+        layer_indices.append(idx)
+        layer_labels.append('output' if idx == -1 else f'layer_{idx}')
+    
+    # Get oracle Q if available
+    oracle_q = df['oracle_Q'].dropna().mean() if 'oracle_Q' in df.columns else None
+    
+    # Group by (lambda_sym, penalized_layer)
+    groups = df.groupby(['lambda_sym', 'penalized_layer'], dropna=False)
+    
+    n_plots = 0
+    for (lambda_val, pen_layer), group in groups:
+        if lambda_val == 0:
+            continue  # Skip baseline
+        
+        pen_layer_int = None if pd.isna(pen_layer) else int(pen_layer)
+        pen_layer_str = 'none' if pen_layer_int is None else pen_layer_int
+        
+        # Find index of penalized layer
+        pen_idx = None
+        if pen_layer_int is not None:
+            try:
+                pen_idx = layer_indices.index(pen_layer_int)
+            except ValueError:
+                pass
+        
+        # Aggregate Q values across seeds
+        q_means = []
+        q_cis = []
+        for col in q_cols:
+            values = group[col].dropna().tolist()
+            mean, ci = compute_stats(values)
+            q_means.append(mean)
+            q_cis.append(ci)
+        
+        title = f'Q vs Layer  |  λ={lambda_val}, penalized={pen_layer_str}'
+        filename = f'Q_lambda={lambda_val}_pen={pen_layer_str}.png'
+        
+        plot_Q_vs_layer_single(q_means, q_cis, layer_labels.copy(), output_dir / filename,
+                               title, penalized_layer_idx=pen_idx, oracle_q=oracle_q)
+        n_plots += 1
+    
+    # Plot baseline
+    baseline = df[df['lambda_sym'] == 0]
+    if len(baseline) > 0:
+        q_means = []
+        q_cis = []
+        for col in q_cols:
+            values = baseline[col].dropna().tolist()
+            mean, ci = compute_stats(values)
+            q_means.append(mean)
+            q_cis.append(ci)
+        
+        plot_Q_vs_layer_single(q_means, q_cis, layer_labels.copy(), output_dir / 'Q_baseline.png',
+                               'Q vs Layer  |  Baseline (no penalty)', oracle_q=oracle_q)
+        n_plots += 1
+    
+    print(f"Saved {n_plots} Q vs layer plots to: {output_dir}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Plot benchmark results: loss vs lambda for each penalized layer',
+        description='Plot benchmark results',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
     python scripts/plot_benchmark.py results/benchmark/
-    python scripts/plot_benchmark.py results/benchmark/*.csv
-    python scripts/plot_benchmark.py file1.csv file2.csv --layers n123l
-    
-Layer specification (--layers):
-    n = baseline (no penalty)
-    1-9 = layer numbers
-    l = output layer (-1)
-    
-    Example: --layers n123l plots baseline + layers 1,2,3 + output
+    python scripts/plot_benchmark.py results/benchmark/*.csv --layers n123l
         """
     )
     
-    parser.add_argument('paths', nargs='+', help='CSV files or directories containing benchmark results')
+    parser.add_argument('paths', nargs='+', help='CSV files or directories')
     parser.add_argument('--layers', type=str, default=None,
-                        help='Layer spec: n=baseline, 1-9=layers, l=output (e.g., "n123l")')
+                        help='Layer spec for loss plot: n=baseline, 1-9=layers, l=output')
     parser.add_argument('--output', '-o', type=str, default=None,
-                        help='Output file path (default: loss_vs_lambda.png in first input dir)')
+                        help='Output directory (default: first input path)')
     
     args = parser.parse_args()
     
-    # Load data
     df = load_csv_files(args.paths)
-    
-    # Parse layers
     layers_to_plot = parse_layer_spec(args.layers) if args.layers else None
     
-    # Determine output path
+    # Determine output directory
     if args.output:
-        output_path = Path(args.output)
+        output_dir = Path(args.output)
     else:
         first_path = Path(args.paths[0])
-        if first_path.is_dir():
-            output_path = first_path / 'loss_vs_lambda.png'
-        else:
-            output_path = first_path.parent / 'loss_vs_lambda.png'
+        output_dir = first_path if first_path.is_dir() else first_path.parent
     
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Plot
-    plot_loss_vs_lambda(df, output_path, layers_to_plot)
+    # Generate plots
+    plot_loss_vs_lambda(df, output_dir / 'loss_vs_lambda.png', layers_to_plot)
+    plot_Q_vs_layer(df, output_dir / 'Q_vs_layer')
 
 
 if __name__ == '__main__':
