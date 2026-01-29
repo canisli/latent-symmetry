@@ -7,9 +7,9 @@ Generates:
 2. Q_vs_layer/ folder - Q as function of layer for each (λ, penalized_layer) combo
 
 Usage:
-    python scripts/plot_benchmark.py results/N_h_penalty/
+    python scripts/plot_benchmark.py results/N_h_penalty/runs/
     python scripts/plot_benchmark.py results/  # searches all penalty subdirs
-    python scripts/plot_benchmark.py results/Q_h_penalty/*.csv --layers 123l
+    python scripts/plot_benchmark.py results/Q_h_penalty/runs/*.csv --layers 123l
 """
 
 import argparse
@@ -44,12 +44,19 @@ def load_csv_files(paths: list) -> pd.DataFrame:
     for f in csv_files:
         try:
             df = pd.read_csv(f)
-            # Add source directory info (penalty type) from parent folder name
+            # Add source directory info (penalty type) from folder structure
+            # Expected: results/{penalty}/runs/*.csv or results/{penalty}_penalty/*.csv
             parent_name = f.parent.name
-            if parent_name.endswith('_penalty'):
+            grandparent_name = f.parent.parent.name if f.parent.parent else ''
+            
+            if parent_name == 'runs':
+                # New structure: results/{penalty}/runs/*.csv
+                df['source_penalty'] = grandparent_name
+            elif parent_name.endswith('_penalty'):
+                # Old structure: results/{penalty}_penalty/*.csv
                 df['source_penalty'] = parent_name.replace('_penalty', '')
             else:
-                df['source_penalty'] = 'unknown'
+                df['source_penalty'] = parent_name
             dfs.append(df)
         except Exception as e:
             print(f"Warning: Could not read {f}: {e}")
@@ -66,9 +73,16 @@ def load_csv_files(paths: list) -> pd.DataFrame:
     print(f"  Penalty types: {', '.join(sources)}")
     
     # Check for bad runs (inf/nan in Q values or loss)
-    q_cols = [c for c in combined.columns if c.startswith('Q_layer_')]
-    bad_mask = combined[q_cols].apply(lambda x: ~np.isfinite(x)).any(axis=1)
-    bad_mask |= ~np.isfinite(combined['best_val_loss'])
+    q_cols = [c for c in combined.columns if c.startswith('Q_layer_') and not c.startswith('Q_h_')]
+    
+    # Convert Q columns to numeric (coerce errors to NaN)
+    for col in q_cols:
+        combined[col] = pd.to_numeric(combined[col], errors='coerce')
+    combined['best_val_loss'] = pd.to_numeric(combined['best_val_loss'], errors='coerce')
+    
+    # Check for inf/nan values
+    bad_mask = ~np.isfinite(combined[q_cols].values).all(axis=1)
+    bad_mask |= ~np.isfinite(combined['best_val_loss'].values)
     n_bad = bad_mask.sum()
     if n_bad > 0:
         print(f"Warning: {n_bad} experiments have inf/nan values (training likely diverged)")
@@ -95,10 +109,10 @@ def compute_stats(values: list) -> tuple:
 
 
 def parse_layer_spec(spec: str) -> set:
-    """Parse layer spec: n=baseline, 1-9=layers, l=output (-1)."""
+    """Parse layer spec: n/b=baseline, 1-9=layers, l=output (-1)."""
     layers = set()
     for c in spec.lower():
-        if c == 'n':
+        if c in ('n', 'b'):
             layers.add(None)
         elif c.isdigit():
             layers.add(int(c))
@@ -377,19 +391,19 @@ def main():
         epilog="""
 Examples:
     # Plot single penalty type
-    python scripts/plot_benchmark.py results/N_h_penalty/
+    python scripts/plot_benchmark.py results/N_h_penalty/runs/
     
     # Plot all penalty types (searches recursively)
     python scripts/plot_benchmark.py results/
     
     # Filter specific layers
-    python scripts/plot_benchmark.py results/Q_h_penalty/ --layers n123l
+    python scripts/plot_benchmark.py results/Q_h_penalty/runs/ --layers b123l
         """
     )
     
     parser.add_argument('paths', nargs='+', help='CSV files or directories')
     parser.add_argument('--layers', type=str, default=None,
-                        help='Layer spec for loss plot: n=baseline, 1-9=layers, l=output')
+                        help='Layer spec for loss plot: b/n=baseline, 1-9=layers, l=output')
     parser.add_argument('--output', '-o', type=str, default=None,
                         help='Output directory (default: first input path)')
     

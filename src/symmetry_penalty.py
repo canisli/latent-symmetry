@@ -4,8 +4,10 @@ Symmetry penalty for training with orbit variance regularization.
 Penalty types:
 - N_hPenalty: Numerator of Q_h = E[||h(g1*x) - h(g2*x)||²] (raw activations)
 - N_zPenalty: Numerator of Q = E[||z(g1*x) - z(g2*x)||²] (PCA-projected)
-- Q_hPenalty: Full Q_h = numerator / denominator (raw activations)
-- Q_zPenalty: Full Q = numerator / denominator (PCA-projected)
+- Q_hPenalty: Full Q_h = numerator / denominator (raw activations, stopgrad on denominator)
+- Q_zPenalty: Full Q = numerator / denominator (PCA-projected, stopgrad on denominator)
+- Q_h_ns: Q_h without stopgrad on denominator
+- Q_z_ns: Q_z without stopgrad on denominator
 - PeriodicPCAOrbitVariancePenalty: Periodic PCA re-fitting variant
 - EMAPCAOrbitVariancePenalty: EMA statistics variant
 """
@@ -478,6 +480,14 @@ def create_symmetry_penalty(penalty_type: str, **kwargs) -> SymmetryPenalty:
         # Q_z accepts explained_variance, epsilon, stopgrad_denominator
         filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance', 'epsilon']}
         return Q_zPenalty(stopgrad_denominator=stopgrad_denominator, **filtered)
+    elif penalty_type == "Q_h_ns":
+        # Q_h with no stopgrad on denominator
+        filtered = {k: v for k, v in kwargs.items() if k in ['epsilon']}
+        return Q_hPenalty(stopgrad_denominator=False, **filtered)
+    elif penalty_type == "Q_z_ns":
+        # Q_z with no stopgrad on denominator
+        filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance', 'epsilon']}
+        return Q_zPenalty(stopgrad_denominator=False, **filtered)
     elif penalty_type == "periodic_pca":
         # periodic_pca accepts explained_variance, refit_interval
         filtered = {k: v for k, v in kwargs.items() if k in ['explained_variance', 'refit_interval']}
@@ -489,5 +499,5 @@ def create_symmetry_penalty(penalty_type: str, **kwargs) -> SymmetryPenalty:
     else:
         raise ValueError(
             f"Unknown penalty type: {penalty_type}. "
-            f"Use 'N_h', 'N_z', 'Q_h', 'Q_z', 'periodic_pca', or 'ema_pca'."
+            f"Use 'N_h', 'N_z', 'Q_h', 'Q_z', 'Q_h_ns', 'Q_z_ns', 'periodic_pca', or 'ema_pca'."
         )

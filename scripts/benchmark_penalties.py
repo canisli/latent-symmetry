@@ -373,8 +373,8 @@ def run_benchmark(
     experiment_count = 0
     
     for penalty_type in penalty_types:
-        # Create penalty-specific output directory
-        penalty_output_path = Path(output_dir) / f"{penalty_type}_penalty"
+        # Create penalty-specific output directory: results/{penalty}_penalty/runs/
+        penalty_output_path = Path(output_dir) / f"{penalty_type}_penalty" / "runs"
         penalty_output_path.mkdir(parents=True, exist_ok=True)
         
         print(f"\n{'='*60}")
@@ -544,32 +544,47 @@ def parse_floats(float_args: List[str]) -> List[float]:
     return result
 
 
-def parse_layers(layer_args: List[str], num_hidden_layers: int) -> List[int]:
+def parse_layers(layer_spec: str, num_hidden_layers: int) -> List[int]:
     """
-    Parse layer arguments into list of layer indices.
+    Parse layer spec string into list of layer indices.
+    
+    Format: compact string where each character specifies a layer:
+        - '1'-'9': hidden layer indices
+        - 'l' or 'L': output layer (-1)
+        - 'a' or 'A': all layers (hidden + output)
     
     Args:
-        layer_args: List of layer arguments (e.g., ["1", "2", "-1", "output", "all"])
+        layer_spec: Layer specification string (e.g., "123l", "l", "a")
         num_hidden_layers: Number of hidden layers in the model.
     
     Returns:
         List of layer indices (1-based for hidden, -1 for output).
+    
+    Examples:
+        "l" -> [-1] (output only)
+        "123" -> [1, 2, 3]
+        "12l" -> [1, 2, -1]
+        "a" or None -> [1, 2, ..., num_hidden_layers, -1]
     """
-    if layer_args is None or layer_args == ['all']:
+    if layer_spec is None or layer_spec.lower() == 'a':
         return list(range(1, num_hidden_layers + 1)) + [-1]
     
     layers = []
-    for arg in layer_args:
-        if arg == 'output':
+    for c in layer_spec.lower():
+        if c.isdigit():
+            layer_idx = int(c)
+            if 1 <= layer_idx <= num_hidden_layers:
+                layers.append(layer_idx)
+            else:
+                print(f"Warning: Layer {layer_idx} out of range (1-{num_hidden_layers}). Skipping.")
+        elif c == 'l':
             layers.append(-1)
-        elif arg == 'all':
+        elif c == 'a':
             return list(range(1, num_hidden_layers + 1)) + [-1]
         else:
-            try:
-                layers.append(int(arg))
-            except ValueError:
-                print(f"Warning: Invalid layer '{arg}'. Skipping.")
-    return layers
+            print(f"Warning: Invalid layer spec character '{c}'. Skipping.")
+    
+    return layers if layers else list(range(1, num_hidden_layers + 1)) + [-1]
 
 
 def main():
@@ -591,13 +606,16 @@ Examples:
     python scripts/benchmark_penalties.py --lambda-values 0.0 0.1 1.0 10.0 100.0
     
     # Penalize only output layer
-    python scripts/benchmark_penalties.py --layers -1
+    python scripts/benchmark_penalties.py --layers l
     
-    # Penalize specific hidden layers
-    python scripts/benchmark_penalties.py --layers 1 2 3
+    # Penalize specific hidden layers (1, 2, 3)
+    python scripts/benchmark_penalties.py --layers 123
+    
+    # Penalize layers 1, 2 and output
+    python scripts/benchmark_penalties.py --layers 12l
     
     # Orbit variance loss on output (N_h penalty on output layer)
-    python scripts/benchmark_penalties.py --penalty-types N_h --layers -1
+    python scripts/benchmark_penalties.py --penalty-types N_h --layers l
         """
     )
     
@@ -615,11 +633,12 @@ Examples:
     parser.add_argument('--lambda-values', nargs='+',
                         help='Lambda (penalty weight) values to test')
     parser.add_argument('--penalty-types', nargs='+',
-                        choices=['N_h', 'N_z', 'Q_h', 'Q_z', 'periodic_pca', 'ema_pca'],
+                        choices=['N_h', 'N_z', 'Q_h', 'Q_z', 'Q_h_ns', 'Q_z_ns', 'periodic_pca', 'ema_pca'],
                         help='Symmetry penalty types to test')
-    parser.add_argument('--layers', nargs='+',
-                        help='Layer indices to penalize (e.g., "1 2 3 -1", "-1" for output only, '
-                             '"all" for all layers). Default: all layers.')
+    parser.add_argument('--layers', type=str, default=None,
+                        help='Layer spec: 1-9=hidden layers, l=output, a=all. '
+                             'E.g., "l" for output only, "123l" for layers 1,2,3 and output. '
+                             'Default: all layers.')
     parser.add_argument('--total-steps', type=int,
                         help='Total training steps per experiment (default: %(default)s)',
                         default=DEFAULTS["total_steps"])
