@@ -2,32 +2,20 @@
 """
 Benchmark script for evaluating different symmetry penalties.
 
-This script runs training experiments with various combinations of:
-- Symmetry penalty types (N_h, N_z, Q_h, Q_z, etc.)
-- Lambda values (penalty strength)
-- Layers to penalize
-- Learning rates
-
-Results are saved incrementally to CSV files for analysis.
-
-Usage:
-    python scripts/benchmark_penalties.py --seeds 42 43 44
-    python scripts/benchmark_penalties.py --seeds 1-10 --num-hidden-layers 6 --hidden-dim 128
-    python scripts/benchmark_penalties.py --penalty-types N_h Q_h --lambda-values 0.1 1.0 10.0
+Runs training experiments with various combinations of symmetry penalty types,
+lambda values, layers, and learning rates. Results saved to CSV files.
 """
 
 import argparse
 import csv
-import json
-import os
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any, Set, Tuple
 
 import torch
 import torch.nn as nn
 import numpy as np
+import pandas as pd
 
 
 from latsym.models import build_model
@@ -38,6 +26,24 @@ from latsym.symmetry_penalty import create_symmetry_penalty, PeriodicPCAOrbitVar
 from latsym.metrics import get_metric
 
 from omegaconf import OmegaConf, DictConfig
+
+
+# =============================================================================
+# Default Configuration
+# =============================================================================
+
+DEFAULTS = {
+    "num_hidden_layers": 6,
+    "hidden_dim": 128,
+    "learning_rate": 1e-4,
+    "total_steps": 10000,
+    "batch_size": 64,
+    "n_samples": 1000,
+    "lambda_values": [0.0, 0.001, 0.01, 0.1, 1.0, 10.0],
+    "penalty_types": ["Q_h"],
+    "seeds": [42],
+    "output_dir": "results",
+}
 
 
 def create_config(
@@ -279,15 +285,43 @@ def run_single_experiment(
     return result
 
 
+def get_completed_runs(csv_path: Path) -> Set[Tuple[float, str]]:
+    """
+    Load existing CSV and return set of completed (lambda_sym, penalized_layer) tuples.
+    
+    Args:
+        csv_path: Path to CSV file.
+    
+    Returns:
+        Set of (lambda_sym, penalized_layer) tuples for completed runs.
+        penalized_layer is stored as string ('' for baseline, '-1' for output, '1' for layer 1, etc.)
+    """
+    if not csv_path.exists():
+        return set()
+    
+    try:
+        df = pd.read_csv(csv_path)
+        completed = set()
+        for _, row in df.iterrows():
+            lambda_sym = row['lambda_sym']
+            pen_layer = str(row['penalized_layer']) if pd.notna(row['penalized_layer']) else ''
+            completed.add((lambda_sym, pen_layer))
+        return completed
+    except Exception as e:
+        print(f"Warning: Could not read existing CSV {csv_path}: {e}")
+        return set()
+
+
 def run_benchmark(
-    num_hidden_layers: int = 6,
-    hidden_dim: int = 128,
-    run_seeds: List[int] = None,
-    learning_rates: List[float] = None,
-    lambda_values: List[float] = None,
-    penalty_types: List[str] = None,
-    total_steps: int = 10000,
-    output_dir: str = "results/benchmark",
+    num_hidden_layers: int,
+    hidden_dim: int,
+    run_seeds: List[int],
+    learning_rates: List[float],
+    lambda_values: List[float],
+    penalty_types: List[str],
+    sym_layers: List[int],
+    total_steps: int,
+    output_dir: str,
     verbose: bool = True,
 ):
     """
@@ -300,26 +334,11 @@ def run_benchmark(
         learning_rates: List of learning rates to try.
         lambda_values: List of lambda (penalty weight) values.
         penalty_types: List of penalty types to test.
+        sym_layers: List of layer indices to penalize.
         total_steps: Total training steps per experiment.
-        output_dir: Directory to save results.
+        output_dir: Base directory to save results.
         verbose: Whether to print progress.
     """
-    if run_seeds is None:
-        run_seeds = [42]
-    if learning_rates is None:
-        learning_rates = [1e-4]
-    if lambda_values is None:
-        lambda_values = [0.0, 0.001, 0.01, 0.1, 1.0, 10.0]
-    if penalty_types is None:
-        penalty_types = ["Q_h"]
-    
-    # Layers to penalize: all hidden layers and output
-    all_sym_layers = list(range(1, num_hidden_layers + 1)) + [-1]
-    
-    # Create output directory
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
     # CSV fieldnames - base fields plus per-layer Q and Q_h values
     base_fieldnames = [
         'seed', 'learning_rate', 'lambda_sym', 'sym_penalty_type', 'penalized_layer',
@@ -332,12 +351,10 @@ def run_benchmark(
     qh_fieldnames = [f'Q_h_layer_{i}' for i in range(1, num_hidden_layers + 1)] + ['Q_h_layer_-1']
     fieldnames = base_fieldnames + q_fieldnames + qh_fieldnames
     
-    # Count total experiments
-    # For lambda=0, we only run once (no penalty), for lambda>0 we test each penalty type × each layer
-    n_baseline = len(learning_rates) * len(run_seeds)
+    # Count total experiments per penalty type
     n_nonzero_lambdas = len([l for l in lambda_values if l > 0])
-    n_with_penalty = n_nonzero_lambdas * len(penalty_types) * len(all_sym_layers) * len(learning_rates) * len(run_seeds)
-    total_experiments = n_baseline + n_with_penalty
+    n_per_penalty = (1 + n_nonzero_lambdas * len(sym_layers)) * len(learning_rates) * len(run_seeds)
+    total_experiments = n_per_penalty * len(penalty_types)
     
     print("=" * 60)
     print("Benchmark Configuration")
@@ -348,70 +365,92 @@ def run_benchmark(
     print(f"Lambda values: {lambda_values}")
     print(f"Penalty types: {penalty_types}")
     print(f"Seeds: {run_seeds}")
-    print(f"Layers to penalize: {all_sym_layers}")
-    print(f"Total experiments: {total_experiments} (1 baseline + {n_nonzero_lambdas} lambdas × {len(penalty_types)} penalties × {len(all_sym_layers)} layers per seed/lr)")
+    print(f"Layers to penalize: {sym_layers}")
+    print(f"Total experiments: {total_experiments}")
+    print(f"Output directory: {output_dir}")
     print("=" * 60 + "\n")
     
     experiment_count = 0
     
-    for seed in run_seeds:
-        for lr in learning_rates:
-            # Create CSV filename for this seed/lr combination
-            lr_str = f'{lr:.0e}'.replace('-0', '-')
-            csv_filename = output_path / f'benchmark_layers={num_hidden_layers}x{hidden_dim}_lr={lr_str}_seed={seed}.csv'
-            
-            # Check if file exists and skip if so
-            if csv_filename.exists():
-                print(f"Skipping (file exists): {csv_filename}")
-                # Count how many experiments we're skipping
-                n_skip = 1 + len([l for l in lambda_values if l > 0]) * len(penalty_types) * len(all_sym_layers)
-                experiment_count += n_skip
-                continue
-            
-            # Open CSV file and write header
-            with open(csv_filename, 'w', newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-            
-            print(f"\nResults will be saved to: {csv_filename}")
-            
-            # Run baseline (no penalty)
-            experiment_count += 1
-            print(f"\n[{experiment_count}/{total_experiments}] Baseline: seed={seed}, lr={lr}")
-            
-            cfg = create_config(
-                num_hidden_layers=num_hidden_layers,
-                hidden_dim=hidden_dim,
-                learning_rate=lr,
-                total_steps=total_steps,
-                seed=seed,
-                lambda_sym=0.0,
-                sym_layers=[],
-                sym_penalty_type="N_h",
-            )
-            
-            result = run_single_experiment(cfg, verbose=verbose)
-            
-            # Write result to CSV
-            row = {k: result.get(k, '') for k in fieldnames}
-            with open(csv_filename, 'a', newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writerow(row)
-            
-            # Compute average Q for display
-            q_vals = [result.get(f'Q_layer_{i}', 0) for i in range(1, num_hidden_layers + 1)] + [result.get('Q_layer_-1', 0)]
-            avg_q = np.mean([v for v in q_vals if v is not None and v != ''])
-            print(f"  -> Val loss: {result['final_val_loss']:.4e}, Avg Q: {avg_q:.4f}")
-            
-            # Run with symmetry penalties
-            for lambda_sym in lambda_values:
-                if lambda_sym == 0.0:
-                    continue  # Already ran baseline
+    for penalty_type in penalty_types:
+        # Create penalty-specific output directory
+        penalty_output_path = Path(output_dir) / f"{penalty_type}_penalty"
+        penalty_output_path.mkdir(parents=True, exist_ok=True)
+        
+        print(f"\n{'='*60}")
+        print(f"Running {penalty_type} penalty experiments")
+        print(f"Output: {penalty_output_path}")
+        print(f"{'='*60}")
+        
+        for seed in run_seeds:
+            for lr in learning_rates:
+                # Create CSV filename for this seed/lr combination
+                lr_str = f'{lr:.0e}'.replace('-0', '-')
+                csv_filename = penalty_output_path / f'benchmark_layers={num_hidden_layers}x{hidden_dim}_lr={lr_str}_seed={seed}.csv'
                 
-                for penalty_type in penalty_types:
-                    for penalized_layer in all_sym_layers:
+                # Check which runs are already completed
+                completed_runs = get_completed_runs(csv_filename)
+                n_expected = 1 + n_nonzero_lambdas * len(sym_layers)
+                
+                if len(completed_runs) >= n_expected:
+                    print(f"Skipping (all {n_expected} runs complete): {csv_filename}")
+                    experiment_count += n_expected
+                    continue
+                elif len(completed_runs) > 0:
+                    print(f"\nResuming {csv_filename} ({len(completed_runs)}/{n_expected} runs complete)")
+                else:
+                    # Create new CSV file with header
+                    with open(csv_filename, 'w', newline='') as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                        writer.writeheader()
+                    print(f"\nResults will be saved to: {csv_filename}")
+                
+                # Run baseline (no penalty)
+                experiment_count += 1
+                baseline_key = (0.0, '')
+                if baseline_key in completed_runs:
+                    print(f"[{experiment_count}/{total_experiments}] Baseline: seed={seed}, lr={lr} (already complete)")
+                else:
+                    print(f"\n[{experiment_count}/{total_experiments}] Baseline: seed={seed}, lr={lr}")
+                    
+                    cfg = create_config(
+                        num_hidden_layers=num_hidden_layers,
+                        hidden_dim=hidden_dim,
+                        learning_rate=lr,
+                        total_steps=total_steps,
+                        seed=seed,
+                        lambda_sym=0.0,
+                        sym_layers=[],
+                        sym_penalty_type=penalty_type,
+                    )
+                    
+                    result = run_single_experiment(cfg, verbose=verbose)
+                    
+                    # Write result to CSV
+                    row = {k: result.get(k, '') for k in fieldnames}
+                    with open(csv_filename, 'a', newline='') as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                        writer.writerow(row)
+                    
+                    # Compute average Q for display
+                    q_vals = [result.get(f'Q_layer_{i}', 0) for i in range(1, num_hidden_layers + 1)] + [result.get('Q_layer_-1', 0)]
+                    avg_q = np.mean([v for v in q_vals if v is not None and v != ''])
+                    print(f"  -> Val loss: {result['final_val_loss']:.4e}, Avg Q: {avg_q:.4f}")
+                
+                # Run with symmetry penalties
+                for lambda_sym in lambda_values:
+                    if lambda_sym == 0.0:
+                        continue  # Already ran baseline
+                    
+                    for penalized_layer in sym_layers:
                         experiment_count += 1
                         layer_str = 'output' if penalized_layer == -1 else str(penalized_layer)
+                        run_key = (lambda_sym, str(penalized_layer))
+                        
+                        if run_key in completed_runs:
+                            print(f"[{experiment_count}/{total_experiments}] {penalty_type}: lambda={lambda_sym}, layer={layer_str} (already complete)")
+                            continue
+                        
                         print(f"\n[{experiment_count}/{total_experiments}] {penalty_type}: lambda={lambda_sym}, layer={layer_str}, seed={seed}, lr={lr}")
                         
                         cfg = create_config(
@@ -437,12 +476,12 @@ def run_benchmark(
                         q_vals = [result.get(f'Q_layer_{i}', 0) for i in range(1, num_hidden_layers + 1)] + [result.get('Q_layer_-1', 0)]
                         avg_q = np.mean([v for v in q_vals if v is not None and v != ''])
                         print(f"  -> Val loss: {result['final_val_loss']:.4e}, Avg Q: {avg_q:.4f}")
-            
-            print(f"\nSaved results to: {csv_filename}")
+                
+                print(f"\nSaved results to: {csv_filename}")
     
     print("\n" + "=" * 60)
     print(f"Benchmark complete! Ran {experiment_count} experiments.")
-    print(f"Results saved to: {output_path}")
+    print(f"Results saved to: {output_dir}")
     print("=" * 60)
 
 
@@ -505,18 +544,45 @@ def parse_floats(float_args: List[str]) -> List[float]:
     return result
 
 
+def parse_layers(layer_args: List[str], num_hidden_layers: int) -> List[int]:
+    """
+    Parse layer arguments into list of layer indices.
+    
+    Args:
+        layer_args: List of layer arguments (e.g., ["1", "2", "-1", "output", "all"])
+        num_hidden_layers: Number of hidden layers in the model.
+    
+    Returns:
+        List of layer indices (1-based for hidden, -1 for output).
+    """
+    if layer_args is None or layer_args == ['all']:
+        return list(range(1, num_hidden_layers + 1)) + [-1]
+    
+    layers = []
+    for arg in layer_args:
+        if arg == 'output':
+            layers.append(-1)
+        elif arg == 'all':
+            return list(range(1, num_hidden_layers + 1)) + [-1]
+        else:
+            try:
+                layers.append(int(arg))
+            except ValueError:
+                print(f"Warning: Invalid layer '{arg}'. Skipping.")
+    return layers
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Benchmark different symmetry penalties',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Run with default settings
+    # Run with default settings (Q_h penalty on all layers)
     python scripts/benchmark_penalties.py
     
     # Run with multiple seeds
-    python scripts/benchmark_penalties.py --seeds 42 43 44
-    python scripts/benchmark_penalties.py --seeds 1-10
+    python scripts/benchmark_penalties.py --seeds 42-50
     
     # Test specific penalty types
     python scripts/benchmark_penalties.py --penalty-types N_h Q_h
@@ -524,67 +590,79 @@ Examples:
     # Custom lambda values
     python scripts/benchmark_penalties.py --lambda-values 0.0 0.1 1.0 10.0 100.0
     
-    # Custom model architecture
-    python scripts/benchmark_penalties.py --num-hidden-layers 8 --hidden-dim 256
+    # Penalize only output layer
+    python scripts/benchmark_penalties.py --layers -1
+    
+    # Penalize specific hidden layers
+    python scripts/benchmark_penalties.py --layers 1 2 3
+    
+    # Orbit variance loss on output (N_h penalty on output layer)
+    python scripts/benchmark_penalties.py --penalty-types N_h --layers -1
         """
     )
     
     parser.add_argument('--num-hidden-layers', type=int,
-                        help='Number of hidden layers (uses default if omitted)')
+                        help='Number of hidden layers (default: %(default)s)',
+                        default=DEFAULTS["num_hidden_layers"])
     parser.add_argument('--hidden-dim', type=int,
-                        help='Size of each hidden layer (uses default if omitted)')
+                        help='Size of each hidden layer (default: %(default)s)',
+                        default=DEFAULTS["hidden_dim"])
     parser.add_argument('--seeds', nargs='+',
                         help='Seeds to run (individual, comma-separated, or ranges like "1-10")')
     parser.add_argument('--learning-rates', nargs='+',
-                        help='Learning rates to test (uses default if omitted)')
+                        help='Learning rates to test (default: %(default)s)',
+                        default=None)
     parser.add_argument('--lambda-values', nargs='+',
-                        help='Lambda (penalty weight) values to test (uses default if omitted)')
+                        help='Lambda (penalty weight) values to test')
     parser.add_argument('--penalty-types', nargs='+',
                         choices=['N_h', 'N_z', 'Q_h', 'Q_z', 'periodic_pca', 'ema_pca'],
-                        help='Symmetry penalty types to test (uses default if omitted)')
+                        help='Symmetry penalty types to test')
+    parser.add_argument('--layers', nargs='+',
+                        help='Layer indices to penalize (e.g., "1 2 3 -1", "-1" for output only, '
+                             '"all" for all layers). Default: all layers.')
     parser.add_argument('--total-steps', type=int,
-                        help='Total training steps per experiment (uses default if omitted)')
+                        help='Total training steps per experiment (default: %(default)s)',
+                        default=DEFAULTS["total_steps"])
     parser.add_argument('--output-dir', type=str,
-                        help='Directory to save results (uses default if omitted)')
+                        help='Directory to save results (default: %(default)s)',
+                        default=DEFAULTS["output_dir"])
     parser.add_argument('--quiet', action='store_true',
                         help='Suppress verbose output')
     
     args = parser.parse_args()
     
-    # Parse arguments
-    run_seeds = parse_seeds(args.seeds) if args.seeds is not None else None
-    learning_rates = parse_floats(args.learning_rates) if args.learning_rates is not None else None
-    lambda_values = parse_floats(args.lambda_values) if args.lambda_values is not None else None
+    # Parse list arguments with defaults
+    run_seeds = parse_seeds(args.seeds) if args.seeds else DEFAULTS["seeds"]
+    learning_rates = parse_floats(args.learning_rates) if args.learning_rates else [DEFAULTS["learning_rate"]]
+    lambda_values = parse_floats(args.lambda_values) if args.lambda_values else DEFAULTS["lambda_values"]
+    penalty_types = args.penalty_types or DEFAULTS["penalty_types"]
+    sym_layers = parse_layers(args.layers, args.num_hidden_layers)
     
-    if run_seeds is not None and not run_seeds:
+    # Validate parsed arguments
+    if not run_seeds:
         print("Error: No valid seeds specified.")
         sys.exit(1)
     
-    if learning_rates is not None and not learning_rates:
+    if not learning_rates:
         print("Error: No valid learning rates specified.")
         sys.exit(1)
     
-    if lambda_values is not None and not lambda_values:
+    if not lambda_values:
         print("Error: No valid lambda values specified.")
         sys.exit(1)
     
-    run_kwargs = {
-        "run_seeds": run_seeds,
-        "learning_rates": learning_rates,
-        "lambda_values": lambda_values,
-        "penalty_types": args.penalty_types,
-        "verbose": not args.quiet,
-    }
-    if args.num_hidden_layers is not None:
-        run_kwargs["num_hidden_layers"] = args.num_hidden_layers
-    if args.hidden_dim is not None:
-        run_kwargs["hidden_dim"] = args.hidden_dim
-    if args.total_steps is not None:
-        run_kwargs["total_steps"] = args.total_steps
-    if args.output_dir is not None:
-        run_kwargs["output_dir"] = args.output_dir
-    
-    run_benchmark(**run_kwargs)
+    run_benchmark(
+        num_hidden_layers=args.num_hidden_layers,
+        hidden_dim=args.hidden_dim,
+        run_seeds=run_seeds,
+        learning_rates=learning_rates,
+        lambda_values=lambda_values,
+        penalty_types=penalty_types,
+        sym_layers=sym_layers,
+        total_steps=args.total_steps,
+        output_dir=args.output_dir,
+        verbose=not args.quiet,
+    )
 
 
 if __name__ == '__main__':

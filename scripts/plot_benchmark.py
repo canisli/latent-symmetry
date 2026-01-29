@@ -7,9 +7,9 @@ Generates:
 2. Q_vs_layer/ folder - Q as function of layer for each (λ, penalized_layer) combo
 
 Usage:
-    python scripts/plot_benchmark.py results/benchmark/
-    python scripts/plot_benchmark.py results/benchmark/*.csv
-    python scripts/plot_benchmark.py file1.csv file2.csv --layers 123l
+    python scripts/plot_benchmark.py results/N_h_penalty/
+    python scripts/plot_benchmark.py results/  # searches all penalty subdirs
+    python scripts/plot_benchmark.py results/Q_h_penalty/*.csv --layers 123l
 """
 
 import argparse
@@ -26,12 +26,13 @@ from scipy import stats
 
 
 def load_csv_files(paths: list) -> pd.DataFrame:
-    """Load CSV files from paths (can be files or directories)."""
+    """Load CSV files from paths (can be files or directories, searches recursively)."""
     csv_files = []
     for p in paths:
         path = Path(p)
         if path.is_dir():
-            csv_files.extend(path.glob("benchmark_*.csv"))
+            # Search recursively for benchmark CSV files
+            csv_files.extend(path.rglob("benchmark_*.csv"))
         elif path.exists() and path.suffix == '.csv':
             csv_files.append(path)
     
@@ -42,7 +43,14 @@ def load_csv_files(paths: list) -> pd.DataFrame:
     dfs = []
     for f in csv_files:
         try:
-            dfs.append(pd.read_csv(f))
+            df = pd.read_csv(f)
+            # Add source directory info (penalty type) from parent folder name
+            parent_name = f.parent.name
+            if parent_name.endswith('_penalty'):
+                df['source_penalty'] = parent_name.replace('_penalty', '')
+            else:
+                df['source_penalty'] = 'unknown'
+            dfs.append(df)
         except Exception as e:
             print(f"Warning: Could not read {f}: {e}")
     
@@ -51,13 +59,28 @@ def load_csv_files(paths: list) -> pd.DataFrame:
         sys.exit(1)
     
     combined = pd.concat(dfs, ignore_index=True)
+    
+    # Report what was loaded
+    sources = combined['source_penalty'].unique()
     print(f"Loaded {len(combined)} experiments from {len(csv_files)} file(s)")
+    print(f"  Penalty types: {', '.join(sources)}")
+    
+    # Check for bad runs (inf/nan in Q values or loss)
+    q_cols = [c for c in combined.columns if c.startswith('Q_layer_')]
+    bad_mask = combined[q_cols].apply(lambda x: ~np.isfinite(x)).any(axis=1)
+    bad_mask |= ~np.isfinite(combined['best_val_loss'])
+    n_bad = bad_mask.sum()
+    if n_bad > 0:
+        print(f"Warning: {n_bad} experiments have inf/nan values (training likely diverged)")
+        bad_rows = combined[bad_mask][['lambda_sym', 'penalized_layer', 'best_val_loss']].drop_duplicates()
+        for _, row in bad_rows.iterrows():
+            print(f"  - lambda={row['lambda_sym']}, layer={row['penalized_layer']}")
+    
     return combined
 
 
 def compute_stats(values: list) -> tuple:
     """Compute mean and 95% CI for a list of values."""
-    values = [v for v in values if not np.isnan(v)]
     n = len(values)
     if n == 0:
         return np.nan, np.nan
@@ -94,8 +117,21 @@ def layer_sort_key(x):
         return (0, x)
 
 
+# Fixed color map for consistent colors across plots (later layers darker)
+LAYER_COLORS = {
+    1: '#ffa500',  # orange
+    2: '#fde725',   # viridis yellow
+    3: '#a0da39',   # viridis yellow-green
+    4: '#5ec962',   # viridis green
+    5: '#21918c',   # viridis teal
+    6: '#3b528b',   # viridis blue
+    -1: '#440154',   # viridis dark purple
+    None: '#000000', # black (baseline)
+}
+
+
 def plot_loss_vs_lambda(df: pd.DataFrame, output_path: Path, layers_to_plot: set = None):
-    """Plot loss as function of lambda for each penalized layer."""
+    """Plot loss as function of lambda for each penalized layer using ribbon plots."""
     # Aggregate by (penalized_layer, lambda)
     agg = defaultdict(list)
     for _, row in df.iterrows():
@@ -103,72 +139,91 @@ def plot_loss_vs_lambda(df: pd.DataFrame, output_path: Path, layers_to_plot: set
         layer = None if (pd.isna(layer) or layer == '') else int(layer)
         agg[(layer, row['lambda_sym'])].append(row['best_val_loss'])
     
-    # Compute stats
-    layer_data = defaultdict(lambda: {'lambda': [], 'mean': [], 'ci': []})
-    for (layer, lambda_val), losses in agg.items():
-        mean, ci = compute_stats(losses)
-        layer_data[layer]['lambda'].append(lambda_val)
-        layer_data[layer]['mean'].append(mean)
-        layer_data[layer]['ci'].append(ci)
+    # Get unique layers and lambdas
+    all_layers = set(k[0] for k in agg.keys())
+    all_lambdas = sorted(set(k[1] for k in agg.keys() if k[1] > 0))
     
     # Filter layers
     if layers_to_plot:
-        layer_data = {k: v for k, v in layer_data.items() if k in layers_to_plot}
+        all_layers = all_layers & layers_to_plot
     
-    if not layer_data:
+    sorted_layers = sorted([l for l in all_layers if l is not None], key=layer_sort_key)
+    has_baseline = None in all_layers
+    
+    if not sorted_layers:
         print("No data to plot.")
         return
     
-    sorted_layers = sorted(layer_data.keys(), key=layer_sort_key)
     print(f"Plotting {len(sorted_layers)} layers: {sorted_layers}")
     
     # Plot
-    fig, ax = plt.subplots(figsize=(8, 6))
-    colors = plt.cm.viridis(np.linspace(0, 1, len(sorted_layers)))
+    fig, ax = plt.subplots(figsize=(10, 6))
     
-    # Get lambda range for baseline
-    all_lambdas = []
     for layer in sorted_layers:
-        if layer is not None:
-            all_lambdas.extend([l for l in layer_data[layer]['lambda'] if l > 0])
-    
-    for idx, layer in enumerate(sorted_layers):
-        data = layer_data[layer]
-        lambdas = np.array(data['lambda'])
-        means = np.array(data['mean'])
-        cis = np.array(data['ci'])
-        label = 'Baseline' if layer is None else f'Layer {layer}'
+        label = f'Layer {layer}'
+        color = LAYER_COLORS.get(layer, '#888888')
         
-        if layer is None:
-            # Baseline: horizontal line
-            if len(means) > 0 and all_lambdas:
-                x_min, x_max = min(all_lambdas), max(all_lambdas)
-                ax.axhline(y=means[0], color=colors[idx], linestyle='--', linewidth=1.5, label=label)
-                ax.fill_between([x_min, x_max], means[0] - cis[0], means[0] + cis[0],
-                               color=colors[idx], alpha=0.2)
-        else:
-            # Sort by lambda
-            sort_idx = np.argsort(lambdas)
-            lambdas, means, cis = lambdas[sort_idx], means[sort_idx], cis[sort_idx]
-            mask = lambdas > 0
-            if np.any(mask):
-                ax.errorbar(lambdas[mask], means[mask], yerr=cis[mask],
-                           fmt='o-', linewidth=1.5, markersize=4, capsize=3,
-                           label=label, color=colors[idx])
+        # Collect stats for each lambda
+        lambdas = []
+        medians = []
+        q1s = []
+        q3s = []
+        mins = []
+        maxs = []
+        
+        for lam in all_lambdas:
+            losses = agg.get((layer, lam), [])
+            if losses:
+                lambdas.append(lam)
+                medians.append(np.median(losses))
+                q1s.append(np.percentile(losses, 25))
+                q3s.append(np.percentile(losses, 75))
+                mins.append(np.min(losses))
+                maxs.append(np.max(losses))
+        
+        if lambdas:
+            lambdas = np.array(lambdas)
+            medians = np.array(medians)
+            q1s = np.array(q1s)
+            q3s = np.array(q3s)
+            mins = np.array(mins)
+            maxs = np.array(maxs)
+            
+            # Plot median line
+            ax.plot(lambdas, medians, 'o-', color=color, linewidth=2, markersize=5, label=label)
+            # Shaded IQR region
+            ax.fill_between(lambdas, q1s, q3s, color=color, alpha=0.8)
+            # # Whiskers as thin lines to min/max
+            # ax.fill_between(lambdas, mins, maxs, color=color, alpha=0.5)
+    
+    # Baseline as horizontal line with shaded IQR
+    if has_baseline:
+        baseline_losses = agg.get((None, 0.0), [])
+        if baseline_losses and all_lambdas:
+            median = np.median(baseline_losses)
+            q1, q3 = np.percentile(baseline_losses, [25, 75])
+            x_min, x_max = min(all_lambdas), max(all_lambdas)
+            ax.axhline(y=median, color='black', linestyle='--', linewidth=2, label='Baseline')
+            ax.axhspan(q1, q3, color='black', alpha=0.25)
     
     ax.set_xlabel('λ (penalty weight)')
     ax.set_ylabel('Best Validation Loss')
     ax.set_title('Task Loss vs Penalty Strength')
     ax.set_xscale('log')
     ax.set_yscale('log')
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, loc='upper left')
     ax.grid(True, alpha=0.3)
     
     if 'num_hidden_layers' in df.columns:
-        n_layers = df['num_hidden_layers'].iloc[0]
+        n_layers_model = df['num_hidden_layers'].iloc[0]
         hidden_dim = df['hidden_dim'].iloc[0]
         n_seeds = df['seed'].nunique()
-        fig.suptitle(f"Model: {n_layers}×{hidden_dim} MLP, {n_seeds} seed(s)", fontsize=12)
+        # Include penalty type if available
+        penalty_info = ""
+        if 'source_penalty' in df.columns:
+            penalties = df['source_penalty'].unique()
+            penalty_info = f", Penalty: {'/'.join(penalties)}"
+        fig.suptitle(f"Model: {n_layers_model}×{hidden_dim} MLP, {n_seeds} seed(s){penalty_info}", fontsize=12)
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -283,7 +338,14 @@ def plot_Q_vs_layer(df: pd.DataFrame, output_dir: Path):
             q_means.append(mean)
             q_cis.append(ci)
         
-        title = f'Q vs Layer  |  λ={lambda_val}, penalized={pen_layer_str}'
+        # Include penalty type in title if available
+        penalty_str = ""
+        if 'source_penalty' in group.columns:
+            penalties = group['source_penalty'].unique()
+            if len(penalties) == 1 and penalties[0] != 'unknown':
+                penalty_str = f", {penalties[0]}"
+        
+        title = f'Q vs Layer  |  λ={lambda_val}, penalized={pen_layer_str}{penalty_str}'
         filename = f'Q_lambda={lambda_val}_pen={pen_layer_str}.png'
         
         plot_Q_vs_layer_single(q_means, q_cis, layer_labels.copy(), output_dir / filename,
@@ -314,8 +376,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python scripts/plot_benchmark.py results/benchmark/
-    python scripts/plot_benchmark.py results/benchmark/*.csv --layers n123l
+    # Plot single penalty type
+    python scripts/plot_benchmark.py results/N_h_penalty/
+    
+    # Plot all penalty types (searches recursively)
+    python scripts/plot_benchmark.py results/
+    
+    # Filter specific layers
+    python scripts/plot_benchmark.py results/Q_h_penalty/ --layers n123l
         """
     )
     

@@ -102,19 +102,21 @@ def project_activations(
 
 def compute_pairwise_variance(representations: torch.Tensor) -> torch.Tensor:
     """
-    Compute pairwise variance E[||f(x) - f(x')||²] for all pairs in a batch.
+    Compute pairwise variance (1/2) * E[||f(x) - f(x')||²] for all pairs in a batch.
+    
+    The 1/2 factor accounts for double-counting when computing all ordered pairs.
     
     Args:
         representations: Tensor of shape (N, D).
     
     Returns:
-        Scalar tensor with the mean pairwise squared distance.
+        Scalar tensor with the mean pairwise squared distance (scaled by 1/2).
     """
     N = representations.shape[0]
     diff = representations.unsqueeze(0) - representations.unsqueeze(1)  # (N, N, D)
     diff_sq = (diff ** 2).sum(dim=-1)  # (N, N)
     mask = ~torch.eye(N, dtype=torch.bool, device=representations.device)
-    return diff_sq[mask].mean()
+    return 0.5 * diff_sq[mask].mean()
 
 
 def compute_orbit_variance(
@@ -169,7 +171,7 @@ def compute_orbit_variance(
             diff_sq = ((h1 - h2) ** 2).sum(dim=-1).mean()
             total_variance = total_variance + diff_sq
     
-    return total_variance / n_rotations
+    return 0.5 * total_variance / n_rotations
 
 
 def compute_relative_orbit_variance(
